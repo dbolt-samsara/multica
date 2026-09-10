@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -46,7 +48,7 @@ func (b *sessionsBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	}
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("Sessions dispatch outcome unknown: %w", err)
+		return nil, sessionsDispatchError(err)
 	}
 	var created struct {
 		SessionID string `json:"session_id"`
@@ -118,6 +120,25 @@ func (b *sessionsBackend) Execute(ctx context.Context, prompt string, opts ExecO
 type sessionsFinalRow struct {
 	State         string `json:"state"`
 	ResultSummary string `json:"result_summary"`
+}
+
+// sessionsDispatchError preserves a bounded CLI diagnostic when create has an
+// ambiguous transport outcome. The caller must still treat it as unknown and
+// obtain authoritative readback before any new create attempt.
+func sessionsDispatchError(err error) error {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return fmt.Errorf("Sessions dispatch outcome unknown: %w", err)
+	}
+	const maxDiagnosticBytes = 1024
+	diagnostic := strings.TrimSpace(string(exitErr.Stderr))
+	if len(diagnostic) > maxDiagnosticBytes {
+		diagnostic = diagnostic[:maxDiagnosticBytes] + "…"
+	}
+	if diagnostic == "" {
+		return fmt.Errorf("Sessions dispatch outcome unknown: %w", err)
+	}
+	return fmt.Errorf("Sessions dispatch outcome unknown: %w: %s", err, diagnostic)
 }
 
 func getSessionsFinal(b *sessionsBackend, env []string, id string) (sessionsFinalRow, error) {

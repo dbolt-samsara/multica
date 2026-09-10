@@ -129,6 +129,29 @@ func TestSessionsBackendDispatchWatchAndGet(t *testing.T) {
 	}
 }
 
+func TestSessionsBackendDispatchPreservesBoundedStderr(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "devtools")
+	if err := os.WriteFile(script, []byte(`#!/bin/sh
+printf '%s\\n' 'gateway TLS handshake timeout' >&2
+exit 1
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := ResolveBackend("sessions", Config{ExecutablePath: script, Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = backend.Execute(t.Context(), "prompt", ExecOptions{Model: "devtools/standard", Sessions: &SessionsExecOptions{
+		Repository: "samsara-dev/example@0123456789abcdef0123456789abcdef01234567", Thread: "multica:task-stderr",
+		MCPScopes: []string{"mcp:github"}, MaxSpendUSD: 1,
+		PersistSessionID: func(context.Context, string) error { return nil },
+	}})
+	if err == nil || !strings.Contains(err.Error(), "gateway TLS handshake timeout") {
+		t.Fatalf("dispatch error = %v, want bounded stderr", err)
+	}
+}
+
 func TestSessionsBackendRejectsUnsafeOptions(t *testing.T) {
 	backend := &sessionsBackend{cfg: Config{ExecutablePath: "/missing/devtools", Logger: slog.Default()}}
 	base := SessionsExecOptions{
