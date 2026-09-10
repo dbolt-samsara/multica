@@ -132,7 +132,7 @@ func (d *Daemon) runSessionsTask(ctx context.Context, task Task, taskLog *slog.L
 		},
 	}})
 	if err != nil {
-		return TaskResult{Status: "blocked", Comment: err.Error(), FailureReason: "dispatch_unknown", RemoteCleanupStatus: "confirmed"}, nil
+		return TaskResult{Status: "blocked", Comment: err.Error(), FailureReason: "dispatch_unknown"}, nil
 	}
 	d.runningTasks.Add(1)
 	defer d.runningTasks.Add(-1)
@@ -144,7 +144,7 @@ func (d *Daemon) runSessionsTask(ctx context.Context, task Task, taskLog *slog.L
 		return TaskResult{Status: "completed", Comment: result.Output, SessionID: result.SessionID}, nil
 	}
 	if result.Status == "cancelled" {
-		return TaskResult{Status: "blocked", Comment: "Sessions run cancelled", SessionID: result.SessionID, FailureReason: "dispatch_unknown"}, nil
+		return TaskResult{Status: "blocked", Comment: "Sessions run cancelled", SessionID: result.SessionID, FailureReason: "dispatch_unknown", RemoteCleanupStatus: "confirmed"}, nil
 	}
 	if !pinned && result.SessionID != "" {
 		return TaskResult{Status: "blocked", Comment: "Sessions dispatch outcome could not be pinned", SessionID: result.SessionID, FailureReason: "dispatch_unknown"}, nil
