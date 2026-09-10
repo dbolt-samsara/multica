@@ -47,8 +47,11 @@ func (b *sessionsBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	var created struct {
 		SessionID string `json:"session_id"`
 	}
-	if err = json.Unmarshal(out, &created); err != nil || created.SessionID == "" {
-		return nil, fmt.Errorf("invalid Sessions dispatch response: %w", err)
+	if err = json.Unmarshal(out, &created); err != nil {
+		return nil, fmt.Errorf("decode Sessions dispatch response: %w", err)
+	}
+	if created.SessionID == "" {
+		return nil, fmt.Errorf("Sessions dispatch response has no session_id")
 	}
 	if err = o.PersistSessionID(ctx, created.SessionID); err != nil {
 		return nil, err
@@ -89,8 +92,11 @@ func (b *sessionsBackend) Execute(ctx context.Context, prompt string, opts ExecO
 		}
 		_ = json.Unmarshal(final, &row)
 		status := "failed"
-		if row.State == "succeeded" {
+		switch row.State {
+		case "succeeded":
 			status = "completed"
+		case "cancelled":
+			status = "cancelled"
 		}
 		result <- Result{Status: status, Output: row.ResultSummary, SessionID: created.SessionID}
 	}()
