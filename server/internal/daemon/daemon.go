@@ -7266,6 +7266,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, fmt.Errorf("refusing to spawn agent: task has no workspace_id (task_id=%s)", task.ID)
 	}
 
+	// Sessions is an intentionally remote, issue-only backend. It must never
+	// enter the local provider preparation pipeline below.
+	if provider == "sessions" {
+		return d.runSessionsTask(ctx, task, taskLog)
+	}
+
 	prepareTimeout := d.effectiveTaskPrepareTimeout()
 	prepareCtx, cancelPrepare := context.WithTimeoutCause(ctx, prepareTimeout, errTaskPrepareTimeout)
 	prepareComplete := false

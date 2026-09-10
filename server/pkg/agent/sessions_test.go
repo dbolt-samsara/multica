@@ -25,6 +25,7 @@ if [ "$1 $2" = "session dispatch" ]; then
 elif [ "$1 $2" = "session watch" ]; then
   printf '%s\n' \
     '{"type":"assistant_delta","seq":1,"session_id":"sess-123","text":"hello"}' \
+    '{"type":"assistant_delta","seq":1,"session_id":"sess-123","text":"duplicate"}' \
     '{"type":"tool_call_started","seq":2,"session_id":"sess-123","tool":"bash","op_id":"op-1","input_summary":"run tests"}' \
     '{"type":"tool_call_finished","seq":3,"session_id":"sess-123","tool":"bash","op_id":"op-1","ok":true,"duration_ms":25}' \
     '{"type":"state_changed","seq":4,"session_id":"sess-123","from":"running","to":"succeeded"}'
@@ -67,7 +68,7 @@ func TestSessionsBackendDispatchWatchAndGet(t *testing.T) {
 	backend, err := ResolveBackend("sessions", Config{
 		ExecutablePath: script,
 		Env: map[string]string{
-			"FAKE_CALLS": os.Getenv("FAKE_CALLS"),
+			"FAKE_CALLS":  os.Getenv("FAKE_CALLS"),
 			"FAKE_PROMPT": os.Getenv("FAKE_PROMPT"),
 		},
 		Logger: slog.Default(),
@@ -131,10 +132,10 @@ func TestSessionsBackendDispatchWatchAndGet(t *testing.T) {
 func TestSessionsBackendRejectsUnsafeOptions(t *testing.T) {
 	backend := &sessionsBackend{cfg: Config{ExecutablePath: "/missing/devtools", Logger: slog.Default()}}
 	base := SessionsExecOptions{
-		Repository:  "samsara-dev/example@0123456789abcdef0123456789abcdef01234567",
-		Thread:      "multica:task-1",
-		MCPScopes:   []string{"mcp:github"},
-		MaxSpendUSD: 1,
+		Repository:       "samsara-dev/example@0123456789abcdef0123456789abcdef01234567",
+		Thread:           "multica:task-1",
+		MCPScopes:        []string{"mcp:github"},
+		MaxSpendUSD:      1,
 		PersistSessionID: func(context.Context, string) error { return nil },
 	}
 	cases := map[string]SessionsExecOptions{

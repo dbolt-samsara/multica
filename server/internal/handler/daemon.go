@@ -2426,6 +2426,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, failure
 		}
 		resp.ThreadName = issue.Title
+		if issue.Description.Valid {
+			resp.IssueDescription = issue.Description.String
+		}
 		issueNumber = issue.Number
 
 		// Squad-leader briefing injection: keyed off the task being a
