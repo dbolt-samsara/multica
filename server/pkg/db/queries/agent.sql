@@ -2763,3 +2763,7 @@ SET context = COALESCE(task.context, '{}'::jsonb) || jsonb_build_object(
 WHERE task.id = $1
   AND task.status = 'cancelled'
   AND EXISTS (SELECT 1 FROM agent_runtime runtime WHERE runtime.id = task.runtime_id AND runtime.provider = 'sessions');
+
+-- name: ConfirmSessionsRemoteCleanup :exec
+UPDATE agent_task_queue AS task SET context = COALESCE(task.context, '{}'::jsonb) || jsonb_build_object('sessions_remote_cleanup', jsonb_strip_nulls(jsonb_build_object('status', 'confirmed', 'remote_session_id', sqlc.narg('remote_session_id'))))
+WHERE task.id = sqlc.arg('id') AND task.status = 'cancelled' AND EXISTS (SELECT 1 FROM agent_runtime runtime WHERE runtime.id = task.runtime_id AND runtime.provider = 'sessions');

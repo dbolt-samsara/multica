@@ -132,7 +132,7 @@ func (d *Daemon) runSessionsTask(ctx context.Context, task Task, taskLog *slog.L
 		},
 	}})
 	if err != nil {
-		return TaskResult{Status: "blocked", Comment: err.Error(), FailureReason: "dispatch_unknown"}, nil
+		return TaskResult{Status: "blocked", Comment: err.Error(), FailureReason: "dispatch_unknown", RemoteCleanupStatus: "confirmed"}, nil
 	}
 	d.runningTasks.Add(1)
 	defer d.runningTasks.Add(-1)

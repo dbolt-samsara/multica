@@ -1945,6 +1945,21 @@ func (q *Queries) CompleteAgentTask(ctx context.Context, arg CompleteAgentTaskPa
 	return i, err
 }
 
+const confirmSessionsRemoteCleanup = `-- name: ConfirmSessionsRemoteCleanup :exec
+UPDATE agent_task_queue AS task SET context = COALESCE(task.context, '{}'::jsonb) || jsonb_build_object('sessions_remote_cleanup', jsonb_strip_nulls(jsonb_build_object('status', 'confirmed', 'remote_session_id', $1)))
+WHERE task.id = $2 AND task.status = 'cancelled' AND EXISTS (SELECT 1 FROM agent_runtime runtime WHERE runtime.id = task.runtime_id AND runtime.provider = 'sessions')
+`
+
+type ConfirmSessionsRemoteCleanupParams struct {
+	RemoteSessionID interface{} `json:"remote_session_id"`
+	ID              pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) ConfirmSessionsRemoteCleanup(ctx context.Context, arg ConfirmSessionsRemoteCleanupParams) error {
+	_, err := q.db.Exec(ctx, confirmSessionsRemoteCleanup, arg.RemoteSessionID, arg.ID)
+	return err
+}
+
 const countDelegatedFailureRecoveryTasks = `-- name: CountDelegatedFailureRecoveryTasks :one
 SELECT count(*)
 FROM agent_task_queue

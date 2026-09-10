@@ -467,8 +467,10 @@ type TaskCancelAck struct {
 	// then; the error text carrying the preserved-worktree path is the only
 	// pointer to the agent's work, and without this the cancel path would
 	// swallow it entirely.
-	ErrorMessage  string
-	FailureReason string
+	ErrorMessage        string
+	FailureReason       string
+	RemoteSessionID     string
+	RemoteCleanupStatus string
 }
 
 // AckTaskCancelled tells the server this daemon observed the task's
@@ -494,6 +496,12 @@ func (c *Client) AckTaskCancelled(ctx context.Context, taskID string, ack TaskCa
 	}
 	if ack.FailureReason != "" {
 		body["failure_reason"] = ack.FailureReason
+	}
+	if ack.RemoteSessionID != "" {
+		body["remote_session_id"] = ack.RemoteSessionID
+	}
+	if ack.RemoteCleanupStatus != "" {
+		body["remote_cleanup_status"] = ack.RemoteCleanupStatus
 	}
 	return c.postJSONWithRetry(ctx, fmt.Sprintf("/api/daemon/tasks/%s/cancel-ack", taskID), body, nil, defaultTerminalRetrySchedule)
 }

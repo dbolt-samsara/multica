@@ -5518,7 +5518,7 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		// run errors stay discarded: on a cancelled run they are expected
 		// noise (context canceled, killed process), and persisting them would
 		// stamp a bogus reason on every ordinary mid-run cancel.
-		ack := TaskCancelAck{BranchName: result.BranchName, DurableWorkDir: result.DurableWorkDir}
+		ack := TaskCancelAck{BranchName: result.BranchName, DurableWorkDir: result.DurableWorkDir, RemoteSessionID: result.SessionID, RemoteCleanupStatus: result.RemoteCleanupStatus}
 		var preserved *worktreePreservedError
 		if errors.As(err, &preserved) {
 			ack.ErrorMessage = preserved.Error()

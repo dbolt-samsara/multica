@@ -4842,8 +4842,10 @@ type TaskCancelAckRequest struct {
 	// ErrorMessage / FailureReason: set when the cancelled run's worktree
 	// Finalize ABORTED — there is no branch, and the error text naming the
 	// preserved worktree is the only pointer left to the agent's work.
-	ErrorMessage  string `json:"error_message,omitempty"`
-	FailureReason string `json:"failure_reason,omitempty"`
+	ErrorMessage        string `json:"error_message,omitempty"`
+	FailureReason       string `json:"failure_reason,omitempty"`
+	RemoteSessionID     string `json:"remote_session_id,omitempty"`
+	RemoteCleanupStatus string `json:"remote_cleanup_status,omitempty"`
 }
 
 func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
@@ -4912,6 +4914,13 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 			slog.Error("cancel ack: record preserved-work error failed",
 				"task_id", taskID, "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to record task error")
+			return
+		}
+		delivered = true
+	}
+	if req.RemoteCleanupStatus == "confirmed" {
+		if err := h.Queries.ConfirmSessionsRemoteCleanup(r.Context(), db.ConfirmSessionsRemoteCleanupParams{ID: task.ID, RemoteSessionID: pgtype.Text{String: req.RemoteSessionID, Valid: req.RemoteSessionID != ""}}); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to confirm Sessions cleanup")
 			return
 		}
 		delivered = true
