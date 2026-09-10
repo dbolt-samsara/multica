@@ -139,17 +139,23 @@ func (d *Daemon) runSessionsTask(ctx context.Context, task Task, taskLog *slog.L
 	// Drain before accepting the result so the timeline has received the watcher
 	// tail. This path intentionally has no local watchdog or retry.
 	d.sessionsTaskMessages(ctx, task.ID, session.Messages)
-	result := <-session.Result
+	return sessionsTaskResult(<-session.Result, pinned), nil
+}
+
+// sessionsTaskResult maps only a terminal, independently read cancelled state
+// to confirmed cleanup. Failed reads and nonterminal final rows remain unknown:
+// cancellation already stored that conservative marker transactionally.
+func sessionsTaskResult(result agent.Result, pinned bool) TaskResult {
 	if result.Status == "completed" {
-		return TaskResult{Status: "completed", Comment: result.Output, SessionID: result.SessionID}, nil
+		return TaskResult{Status: "completed", Comment: result.Output, SessionID: result.SessionID}
 	}
 	if result.Status == "cancelled" {
-		return TaskResult{Status: "blocked", Comment: "Sessions run cancelled", SessionID: result.SessionID, FailureReason: "dispatch_unknown", RemoteCleanupStatus: "confirmed"}, nil
+		return TaskResult{Status: "blocked", Comment: "Sessions run cancelled", SessionID: result.SessionID, FailureReason: "dispatch_unknown", RemoteCleanupStatus: "confirmed"}
 	}
 	if !pinned && result.SessionID != "" {
-		return TaskResult{Status: "blocked", Comment: "Sessions dispatch outcome could not be pinned", SessionID: result.SessionID, FailureReason: "dispatch_unknown"}, nil
+		return TaskResult{Status: "blocked", Comment: "Sessions dispatch outcome could not be pinned", SessionID: result.SessionID, FailureReason: "dispatch_unknown"}
 	}
-	return TaskResult{Status: "blocked", Comment: result.Error, SessionID: result.SessionID, FailureReason: "dispatch_unknown"}, nil
+	return TaskResult{Status: "blocked", Comment: result.Error, SessionID: result.SessionID, FailureReason: "dispatch_unknown"}
 }
 
 // sessionsTaskMessages projects only approved watcher fields into the existing

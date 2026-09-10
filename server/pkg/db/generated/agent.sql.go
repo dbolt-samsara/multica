@@ -1946,7 +1946,17 @@ func (q *Queries) CompleteAgentTask(ctx context.Context, arg CompleteAgentTaskPa
 }
 
 const confirmSessionsRemoteCleanup = `-- name: ConfirmSessionsRemoteCleanup :exec
-UPDATE agent_task_queue AS task SET context = COALESCE(task.context, '{}'::jsonb) || jsonb_build_object('sessions_remote_cleanup', jsonb_strip_nulls(jsonb_build_object('status', 'confirmed', 'remote_session_id', $1)))
+UPDATE agent_task_queue AS task
+SET context = jsonb_set(
+  COALESCE(task.context, '{}'::jsonb),
+  '{sessions_remote_cleanup}',
+  COALESCE(task.context->'sessions_remote_cleanup', '{}'::jsonb)
+    || jsonb_strip_nulls(jsonb_build_object(
+      'status', 'confirmed',
+      'remote_session_id', $1
+    )),
+  true
+)
 WHERE task.id = $2 AND task.status = 'cancelled' AND EXISTS (SELECT 1 FROM agent_runtime runtime WHERE runtime.id = task.runtime_id AND runtime.provider = 'sessions')
 `
 
@@ -1955,6 +1965,10 @@ type ConfirmSessionsRemoteCleanupParams struct {
 	ID              pgtype.UUID `json:"id"`
 }
 
+// Keep the transaction-written remote_session_id when a daemon's final
+// readback proves cancellation but its acknowledgement has no id (for example,
+// after a restart). Only the nested cleanup object is merged; a top-level ||
+// would replace it and silently lose the cleanup target.
 func (q *Queries) ConfirmSessionsRemoteCleanup(ctx context.Context, arg ConfirmSessionsRemoteCleanupParams) error {
 	_, err := q.db.Exec(ctx, confirmSessionsRemoteCleanup, arg.RemoteSessionID, arg.ID)
 	return err

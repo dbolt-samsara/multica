@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sync"
@@ -684,5 +685,35 @@ func TestFinalizeDeferredCancelledChat_ChannelIngested_ArchivedSessionKeepsSeale
 	}
 	if restores := f.draftRestores(t, ctx); len(restores) != 0 {
 		t.Errorf("channel task must not create draft restores, got %d", len(restores))
+	}
+}
+
+// A daemon acknowledgement may be lost after the server has already cancelled
+// a Sessions task. The cancellation transaction itself must retain an explicit
+// unknown cleanup obligation and the pinned remote ID.
+func TestCancelTask_SessionsCleanupRemainsUnknownWithoutAcknowledgement(t *testing.T) {
+	ctx := context.Background()
+	pool := newCancelFinalizePool(t)
+	f := createCancelFinalizeFixture(t, ctx, pool, "running", true)
+	if _, err := pool.Exec(ctx, `UPDATE agent_runtime SET provider = 'sessions' WHERE id = (SELECT runtime_id FROM agent_task_queue WHERE id = $1)`, f.taskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE agent_task_queue SET session_id = 'sess-pinned' WHERE id = $1`, f.taskID); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewTaskService(db.New(pool), pool, nil, events.New())
+	if _, err := svc.CancelTaskWithResult(ctx, util.MustParseUUID(f.taskID), CancelTaskOptions{ClientSupportsDraftRestore: true}); err != nil {
+		t.Fatalf("CancelTaskWithResult: %v", err)
+	}
+	var raw []byte
+	if err := pool.QueryRow(ctx, `SELECT context->'sessions_remote_cleanup' FROM agent_task_queue WHERE id = $1`, f.taskID).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var cleanup map[string]string
+	if err := json.Unmarshal(raw, &cleanup); err != nil {
+		t.Fatal(err)
+	}
+	if cleanup["status"] != "unknown" || cleanup["remote_session_id"] != "sess-pinned" {
+		t.Fatalf("cleanup = %#v, want unknown sess-pinned", cleanup)
 	}
 }

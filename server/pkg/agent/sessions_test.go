@@ -154,3 +154,103 @@ func TestSessionsBackendRejectsUnsafeOptions(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionsBackendCancellationRequiresTerminalCancelledReadback(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "calls.log")
+	script := filepath.Join(dir, "devtools")
+	body := `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$FAKE_CALLS"
+case "$1 $2" in
+  "session dispatch") cat > "$FAKE_PROMPT"; printf '%s\n' '{"session_id":"sess-cancel"}' ;;
+  "session watch") while :; do :; done ;;
+  "session cancel") printf '%s\n' '{"session_id":"sess-cancel","state":"cancelled"}' ;;
+  "session get") printf '%s\n' '{"session_id":"sess-cancel","state":"cancelled"}' ;;
+  *) exit 64 ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_CALLS", logPath)
+	t.Setenv("FAKE_PROMPT", filepath.Join(dir, "prompt.txt"))
+	backend, err := ResolveBackend("sessions", Config{ExecutablePath: script, Env: map[string]string{
+		"FAKE_CALLS": os.Getenv("FAKE_CALLS"), "FAKE_PROMPT": os.Getenv("FAKE_PROMPT"),
+	}, Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var pinned string
+	session, err := backend.Execute(ctx, "prompt", ExecOptions{Model: "devtools/standard", Sessions: &SessionsExecOptions{
+		Repository: "samsara-dev/example@0123456789abcdef0123456789abcdef01234567", Thread: "multica:task-cancel",
+		MCPScopes: []string{"mcp:github"}, MaxSpendUSD: 1,
+		PersistSessionID: func(_ context.Context, id string) error { pinned = id; return nil },
+	}})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// Execute returns only after the session ID is pinned; cancellation after
+	// this point must cancel remotely and use a final GET, not watcher exit.
+	if pinned != "sess-cancel" {
+		t.Fatalf("pinned = %q", pinned)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		calls, readErr := os.ReadFile(logPath)
+		if readErr == nil && strings.Contains(string(calls), "session watch sess-cancel") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("watch did not start; calls=%q, err=%v", calls, readErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	for range session.Messages {
+	}
+	result := <-session.Result
+	if result.Status != "cancelled" || result.SessionID != "sess-cancel" {
+		t.Fatalf("result = %+v", result)
+	}
+	calls, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Split(strings.TrimSpace(string(calls)), "\n")
+	wantPrefix := []string{"session dispatch", "session watch sess-cancel", "session cancel sess-cancel", "session get sess-cancel", "session get sess-cancel"}
+	if len(got) != len(wantPrefix) {
+		t.Fatalf("calls = %q, want %d calls", got, len(wantPrefix))
+	}
+	for i, want := range wantPrefix {
+		if !strings.HasPrefix(got[i], want) {
+			t.Errorf("calls[%d] = %q, want prefix %q", i, got[i], want)
+		}
+	}
+}
+
+func TestSessionsBackendCancellationBeforePinHasNoRemoteCleanupConfirmation(t *testing.T) {
+	script, _ := writeFakeDevtools(t)
+	backend, err := ResolveBackend("sessions", Config{ExecutablePath: script, Env: map[string]string{
+		"FAKE_CALLS": os.Getenv("FAKE_CALLS"), "FAKE_PROMPT": os.Getenv("FAKE_PROMPT"),
+	}, Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	pinned := false
+	_, err = backend.Execute(ctx, "prompt", ExecOptions{Model: "devtools/standard", Sessions: &SessionsExecOptions{
+		Repository: "samsara-dev/example@0123456789abcdef0123456789abcdef01234567", Thread: "multica:task-before-pin",
+		MCPScopes: []string{"mcp:github"}, MaxSpendUSD: 1,
+		PersistSessionID: func(context.Context, string) error { pinned = true; return nil },
+	}})
+	if err == nil {
+		t.Fatal("Execute succeeded after cancellation")
+	}
+	if pinned {
+		t.Fatal("cancelled dispatch must not claim a pinned remote Session ID")
+	}
+}

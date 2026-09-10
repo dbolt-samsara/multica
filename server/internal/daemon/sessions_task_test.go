@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/multica-ai/multica/server/pkg/agent"
 )
 
 func TestBuildSessionsIntentIsImmutableAndIssueOnly(t *testing.T) {
@@ -47,5 +49,27 @@ func TestBuildSessionsIntentRejectsUnsafeTargets(t *testing.T) {
 		if _, err := buildSessionsIntent(task); err == nil {
 			t.Fatalf("unsafe task %+v was accepted", task)
 		}
+	}
+}
+
+func TestSessionsTaskResultConfirmsOnlyTerminalCancellation(t *testing.T) {
+	cases := []struct {
+		name        string
+		result      agent.Result
+		pinned      bool
+		wantCleanup string
+	}{
+		{name: "terminal cancelled readback", result: agent.Result{Status: "cancelled", SessionID: "sess-1"}, pinned: true, wantCleanup: "confirmed"},
+		{name: "final read failed", result: agent.Result{Status: "failed", Error: "Sessions final read failed", SessionID: "sess-1"}, pinned: true},
+		{name: "nonterminal final read", result: agent.Result{Status: "failed", Error: "Sessions final state is nonterminal: running", SessionID: "sess-1"}, pinned: true},
+		{name: "un-pinned dispatch", result: agent.Result{Status: "failed", SessionID: "sess-1"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sessionsTaskResult(tc.result, tc.pinned)
+			if got.RemoteCleanupStatus != tc.wantCleanup {
+				t.Fatalf("RemoteCleanupStatus = %q, want %q (result: %+v)", got.RemoteCleanupStatus, tc.wantCleanup, got)
+			}
+		})
 	}
 }
