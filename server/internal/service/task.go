@@ -4660,7 +4660,7 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 		if parent, perr := s.Queries.GetAgentTask(ctx, taskID); perr != nil {
 			slog.Warn("fail task auto-retry: load parent failed",
 				"task_id", util.UUIDToString(taskID), "error", perr)
-		} else if retryEligible(failureReason, parent) {
+		} else if retryEligible(failureReason, parent) && s.runtimeAllowsAutoRetry(ctx, parent) {
 			wantRetry = true
 			// Persist the reason-aware effective budget into the child so the
 			// retry chain self-describes (e.g. provider_network → max_attempts=3),
@@ -5158,6 +5158,17 @@ func retryEligible(failureReason string, t db.AgentTaskQueue) bool {
 		(t.IssueID.Valid || t.ChatSessionID.Valid || isSourceContextQuickCreateTask(t))
 }
 
+func (s *TaskService) runtimeAllowsAutoRetry(ctx context.Context, t db.AgentTaskQueue) bool {
+	// A Sessions run may still be spending remotely after any daemon-shaped
+	// failure. Never create a new task until an operator reconciles it.
+	runtime, err := s.Queries.GetAgentRuntime(ctx, t.RuntimeID)
+	if err != nil {
+		slog.Warn("task auto-retry skipped: runtime could not be resolved", "task_id", util.UUIDToString(t.ID), "error", err)
+		return false
+	}
+	return runtime.Provider != "sessions"
+}
+
 func isSourceContextQuickCreateTask(task db.AgentTaskQueue) bool {
 	if len(task.Context) == 0 || task.IssueID.Valid || task.ChatSessionID.Valid || task.AutopilotRunID.Valid {
 		return false
@@ -5232,7 +5243,7 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	// Autopilot has its own retry semantics (don't double-trigger) and a task
 	// with no issue/chat link has nowhere to report its retry — retryEligible
 	// covers both, keeping this sweeper path in sync with FailTask's in-tx retry.
-	if !retryEligible(reason, parent) {
+	if !retryEligible(reason, parent) || !s.runtimeAllowsAutoRetry(ctx, parent) {
 		return nil, nil
 	}
 
