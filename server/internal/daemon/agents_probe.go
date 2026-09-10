@@ -74,6 +74,23 @@ func cachedShellResolvedAgents() map[string]string {
 	return shellResolveCache
 }
 
+// probeSessionsExecutable resolves only the explicit Sessions feature switch.
+// It deliberately does not consult PATH or a login shell: enabling a remote
+// execution backend must be an operator's explicit, absolute executable choice.
+// Registration and its read-only auth preflight remain separate, so this helper
+// is safe to prepare while the runtime itself is still unregistered.
+func probeSessionsExecutable() (AgentEntry, bool) {
+	configured := strings.TrimSpace(os.Getenv("MULTICA_SESSIONS_PATH"))
+	if configured == "" || !filepath.IsAbs(configured) {
+		return AgentEntry{}, false
+	}
+	path, err := resolveAgentExecutablePath(configured)
+	if err != nil {
+		return AgentEntry{}, false
+	}
+	return AgentEntry{Path: path, Command: configured}, true
+}
+
 // probeAgentCLIs discovers which built-in agent CLIs are installed on this
 // machine and returns one AgentEntry per provider that resolved.
 //
