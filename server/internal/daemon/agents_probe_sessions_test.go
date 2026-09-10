@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"context"
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -31,5 +33,39 @@ func TestProbeSessionsExecutableRequiresExplicitAbsolutePath(t *testing.T) {
 				t.Fatalf("Path = %q, want %q", got.Path, bin)
 			}
 		})
+	}
+}
+
+func TestPreflightSessionsExecutableUsesOnlyReadOnlyCommands(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX fixture")
+	}
+	dir := t.TempDir()
+	log := filepath.Join(dir, "calls")
+	bin := filepath.Join(dir, "devtools")
+	writeDaemonTestExecutable(t, bin, []byte(`#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$CALLS"
+case "$1 $2" in
+  "auth status"|"session list") exit 0 ;;
+  *) exit 64 ;;
+esac
+`))
+	t.Setenv("CALLS", log)
+	if err := preflightSessionsExecutable(context.Background(), AgentEntry{Path: bin}); err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	got, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "auth status\nsession list --json --limit 1\n" {
+		t.Fatalf("calls = %q", got)
+	}
+}
+
+func TestPreflightSessionsExecutableRejectsRelativePath(t *testing.T) {
+	if err := preflightSessionsExecutable(context.Background(), AgentEntry{Path: "devtools"}); err == nil {
+		t.Fatal("relative path accepted")
 	}
 }

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -344,4 +345,21 @@ func probeDshMulticaProfile(executablePath string) bool {
 		}
 	}
 	return false
+}
+
+// preflightSessionsExecutable verifies the two read-only CLI capabilities that
+// make an explicitly configured Sessions executable eligible for registration.
+// It must be called by the eventual registration gate, never by discovery: a
+// probe must not turn a PATH scan into authentication or network traffic.
+func preflightSessionsExecutable(ctx context.Context, entry AgentEntry) error {
+	if entry.Path == "" || !filepath.IsAbs(entry.Path) {
+		return fmt.Errorf("Sessions executable path must be absolute")
+	}
+	for _, args := range [][]string{{"auth", "status"}, {"session", "list", "--json", "--limit", "1"}} {
+		cmd := exec.CommandContext(ctx, entry.Path, args...)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("Sessions preflight %q failed: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+		}
+	}
+	return nil
 }
