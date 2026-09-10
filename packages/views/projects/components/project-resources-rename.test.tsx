@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderWithI18n } from "../../test/i18n";
 
 const updateMock = vi.fn().mockResolvedValue({});
@@ -26,10 +26,26 @@ const RESOURCE = {
   created_by: "u1",
 };
 
+const GITHUB_RESOURCE = {
+  id: "repo-1",
+  project_id: "p1",
+  workspace_id: "workspace-1",
+  resource_type: "github_repo",
+  resource_ref: {
+    url: "https://github.com/samsara-dev/devbox-client",
+  },
+  label: null,
+  position: 0,
+  created_at: "2026-08-18T00:00:00Z",
+  created_by: "u1",
+};
+
+const resources = { current: [RESOURCE] };
+
 vi.mock("@tanstack/react-query", () => ({
   useQuery: (options: { queryKey?: unknown[] }) => {
     const key = options?.queryKey?.[0];
-    if (key === "project-resources") return { data: [RESOURCE] };
+    if (key === "project-resources") return { data: resources.current };
     return { data: [] };
   },
   queryOptions: (options: unknown) => options,
@@ -70,7 +86,12 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 import { ProjectResourcesSection } from "./project-resources-section";
 
 describe("ProjectResourcesSection — renaming a worktree local directory", () => {
-  beforeEach(() => updateMock.mockClear());
+  afterEach(cleanup);
+
+  beforeEach(() => {
+    updateMock.mockClear();
+    resources.current = [RESOURCE];
+  });
 
   // The reported skew, one step further on: backend rolled back below v0.4.25
   // while the runtimes stay current — a combination the docs call supported.
@@ -96,8 +117,8 @@ describe("ProjectResourcesSection — renaming a worktree local directory", () =
   // Full read-order matrix: local-directory-label.test.ts.
   it("shows the top-level label over the one left behind in the ref", () => {
     renderWithI18n(<ProjectResourcesSection projectId="p1" />);
-    expect(screen.getByText("Renamed Client")).toBeInTheDocument();
-    expect(screen.queryByText("Game Client")).not.toBeInTheDocument();
+    expect(screen.getByText("Renamed Client")).toBeTruthy();
+    expect(screen.queryByText("Game Client")).toBeNull();
   });
 
   // Clearing goes through the same label-only path as renaming: an emptied
@@ -115,5 +136,25 @@ describe("ProjectResourcesSection — renaming a worktree local directory", () =
     const payload = updateMock.mock.calls[0]?.[0] as { data: unknown };
     expect(payload.data).toEqual({ label: "" });
     expect(payload.data).not.toHaveProperty("resource_ref");
+  });
+
+  it("edits a GitHub resource checkout ref from the project UI", async () => {
+    resources.current = [GITHUB_RESOURCE];
+    renderWithI18n(<ProjectResourcesSection projectId="p1" />);
+
+    fireEvent.click(screen.getByTitle(/change checkout reference/i));
+    const input = screen.getByRole("textbox", { name: /checkout reference/i });
+    fireEvent.change(input, { target: { value: "main" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(updateMock).toHaveBeenCalledTimes(1));
+    const payload = updateMock.mock.calls[0]?.[0] as { resourceId: string; data: unknown };
+    expect(payload.resourceId).toBe("repo-1");
+    expect(payload.data).toEqual({
+      resource_ref: {
+        url: "https://github.com/samsara-dev/devbox-client",
+        ref: "main",
+      },
+    });
   });
 });

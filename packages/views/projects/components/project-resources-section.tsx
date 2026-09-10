@@ -34,6 +34,15 @@ import {
 import { useConfigStore } from "@multica/core/config";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
+import { Input } from "@multica/ui/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@multica/ui/components/ui/dialog";
 import {
   Popover,
   PopoverContent,
@@ -102,6 +111,10 @@ type ModeDialogState = {
   label?: string;
 };
 
+type GithubRefDialogState = ProjectResource & {
+  resource_ref: GithubRepoResourceRef;
+};
+
 export function ProjectResourcesSection({ projectId }: { projectId: string }) {
   const { t } = useT("projects");
   const wsId = useWorkspaceId();
@@ -114,6 +127,7 @@ export function ProjectResourcesSection({ projectId }: { projectId: string }) {
   const [modeDialog, setModeDialog] = useState<ModeDialogState | null>(null);
   const [modeSaving, setModeSaving] = useState(false);
   const [modeError, setModeError] = useState<string | null>(null);
+  const [githubRefDialog, setGithubRefDialog] = useState<GithubRefDialogState | null>(null);
 
   const { data: resources = [] } = useQuery(
     projectResourcesOptions(wsId, projectId),
@@ -355,6 +369,29 @@ export function ProjectResourcesSection({ projectId }: { projectId: string }) {
     }
   };
 
+  const handleUpdateGithubRef = async (resource: GithubRefDialogState, ref: string) => {
+    const trimmed = ref.trim();
+    const { ref: _previousRef, ...withoutRef } = resource.resource_ref;
+    try {
+      await updateResource.mutateAsync({
+        resourceId: resource.id,
+        data: {
+          resource_ref: trimmed
+            ? { ...withoutRef, ref: trimmed }
+            : withoutRef,
+        },
+      });
+      toast.success(t(($) => $.resources.toast_github_ref_updated));
+      setGithubRefDialog(null);
+    } catch (err) {
+      toast.error(
+        err instanceof Error && err.message
+          ? err.message
+          : t(($) => $.resources.toast_github_ref_update_failed),
+      );
+    }
+  };
+
   return (
     <div>
       <button
@@ -398,6 +435,7 @@ export function ProjectResourcesSection({ projectId }: { projectId: string }) {
                       resource: target,
                     });
                   }}
+                  onEditGithubRef={(target) => setGithubRefDialog(target)}
                 />
               ))}
             </div>
@@ -548,6 +586,16 @@ export function ProjectResourcesSection({ projectId }: { projectId: string }) {
           onConfirm={(mode) => void handleConfirmMode(mode)}
         />
       )}
+      {githubRefDialog && (
+        <GithubRefDialog
+          resource={githubRefDialog}
+          saving={updateResource.isPending}
+          onOpenChange={(next) => {
+            if (!next) setGithubRefDialog(null);
+          }}
+          onConfirm={(ref) => void handleUpdateGithubRef(githubRefDialog, ref)}
+        />
+      )}
     </div>
   );
 }
@@ -587,6 +635,7 @@ interface ResourceRowProps {
   onEditLocalDirectoryMode: (
     resource: ProjectResource & { resource_ref: LocalDirectoryResourceRef },
   ) => void;
+  onEditGithubRef: (resource: GithubRefDialogState) => void;
 }
 
 function ResourceRow({
@@ -596,6 +645,7 @@ function ResourceRow({
   onRemove,
   onRenameLocalDirectory,
   onEditLocalDirectoryMode,
+  onEditGithubRef,
 }: ResourceRowProps) {
   const { t } = useT("projects");
   if (isGithubRef(resource)) {
@@ -620,6 +670,14 @@ function ResourceRow({
           />
           <TooltipContent side="top" className="whitespace-pre-line">{tooltip}</TooltipContent>
         </Tooltip>
+        <button
+          type="button"
+          onClick={() => onEditGithubRef(resource)}
+          className="opacity-0 group-hover:opacity-100 transition-opacity rounded-sm p-0.5 hover:bg-accent"
+          title={t(($) => $.resources.github_ref_edit_tooltip)}
+        >
+          <Pencil className="size-3 text-muted-foreground" />
+        </button>
         <button
           type="button"
           onClick={onRemove}
@@ -659,6 +717,53 @@ function ResourceRow({
         <Trash2 className="size-3" />
       </button>
     </div>
+  );
+}
+
+function GithubRefDialog({
+  resource,
+  saving,
+  onOpenChange,
+  onConfirm,
+}: {
+  resource: GithubRefDialogState;
+  saving: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: (ref: string) => void;
+}) {
+  const { t } = useT("projects");
+  const [ref, setRef] = useState(resource.resource_ref.ref ?? "");
+
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{t(($) => $.resources.github_ref_title)}</DialogTitle>
+          <DialogDescription>{t(($) => $.resources.github_ref_description)}</DialogDescription>
+        </DialogHeader>
+        <div className="font-mono text-micro text-muted-foreground break-all">
+          {resource.resource_ref.url}
+        </div>
+        <Input
+          autoFocus
+          aria-label={t(($) => $.resources.github_ref_label)}
+          value={ref}
+          onChange={(event) => setRef(event.target.value)}
+          placeholder={t(($) => $.resources.github_ref_placeholder)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") onConfirm(ref);
+          }}
+        />
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={saving}>
+            {t(($) => $.resources.mode_cancel)}
+          </Button>
+          <Button onClick={() => onConfirm(ref)} disabled={saving}>
+            {t(($) => $.resources.github_ref_save)}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
