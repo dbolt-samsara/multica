@@ -55,8 +55,11 @@ func buildSessionsIntent(task Task) (sessionsIntent, error) {
 func immutableGitHubRepository(repo RepoData) (string, error) {
 	raw := strings.TrimSpace(repo.URL)
 	ref := strings.TrimSpace(repo.Ref)
-	if raw == "" || !fullGitSHA.MatchString(ref) {
-		return "", fmt.Errorf("Sessions runtime requires a GitHub repository pinned to a full commit SHA")
+	// A full SHA is the normal immutable form. The explicitly supported `main`
+	// branch is permitted for environments whose Session gateway requires a
+	// branch checkout and rejects detached commits without a base intent.
+	if raw == "" || (!fullGitSHA.MatchString(ref) && ref != "main") {
+		return "", fmt.Errorf("Sessions runtime requires a GitHub repository pinned to a full commit SHA or the supported main branch")
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Host != "github.com" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {

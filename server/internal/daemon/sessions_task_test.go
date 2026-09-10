@@ -8,7 +8,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/agent"
 )
 
-func TestBuildSessionsIntentIsImmutableAndIssueOnly(t *testing.T) {
+func TestBuildSessionsIntentIsPinnedOrSupportedBranchAndIssueOnly(t *testing.T) {
 	task := Task{ID: "task-1", IssueID: "issue-1", IssueIdentifier: "MUL-1", ThreadName: "Fix it", IssueDescription: "The thing is broken.", WorkspaceContext: "be careful", ProjectDescription: "project", TriggerCommentContent: "please fix", Agent: &AgentData{Instructions: "write tests"}, Repos: []RepoData{{URL: "https://github.com/acme/widget.git", Ref: "0123456789abcdef0123456789abcdef01234567"}}}
 	intent, err := buildSessionsIntent(task)
 	if err != nil {
@@ -34,6 +34,17 @@ func TestBuildSessionsIntentIsImmutableAndIssueOnly(t *testing.T) {
 	}
 }
 
+func TestBuildSessionsIntentAllowsSupportedBranch(t *testing.T) {
+	task := Task{ID: "task-branch", IssueID: "issue-branch", Agent: &AgentData{}, Repos: []RepoData{{URL: "https://github.com/samsara-dev/devbox-client", Ref: "main"}}}
+	intent, err := buildSessionsIntent(task)
+	if err != nil {
+		t.Fatalf("buildSessionsIntent(main): %v", err)
+	}
+	if intent.repository != "samsara-dev/devbox-client@main" {
+		t.Fatalf("repository = %q", intent.repository)
+	}
+}
+
 func TestBuildSessionsIntentRejectsUnsafeTargets(t *testing.T) {
 	base := Task{ID: "t", IssueID: "i", Agent: &AgentData{}, Repos: []RepoData{{URL: "https://github.com/acme/widget", Ref: strings.Repeat("a", 40)}}}
 	cases := []Task{func() Task { v := base; v.ChatSessionID = "chat"; return v }(), func() Task { v := base; v.Repos = nil; return v }(), func() Task {
@@ -42,7 +53,7 @@ func TestBuildSessionsIntentRejectsUnsafeTargets(t *testing.T) {
 		return v
 	}(), func() Task {
 		v := base
-		v.Repos = []RepoData{{URL: "https://github.com/acme/widget", Ref: "main"}}
+		v.Repos = []RepoData{{URL: "https://github.com/acme/widget", Ref: "feature bad ref"}}
 		return v
 	}()}
 	for _, task := range cases {
