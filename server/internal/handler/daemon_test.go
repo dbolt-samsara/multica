@@ -2063,10 +2063,12 @@ func TestClaimTask_ProjectDescriptionInjected(t *testing.T) {
 		testWorkspaceID,
 	).Scan(&agentID, &runtimeID)
 
+	const issueDescription = "Fix the pinned integration boundary."
 	issueID := dbfx.Issue(t, "project description", testutil.Cols{
-		"project_id": projectID,
-		"priority":   "medium",
-		"number":     88002,
+		"project_id":  projectID,
+		"description": issueDescription,
+		"priority":    "medium",
+		"number":      88002,
 	})
 
 	dbfx.Task(t, agentID, testutil.Cols{
@@ -2082,6 +2084,7 @@ func TestClaimTask_ProjectDescriptionInjected(t *testing.T) {
 		Task *struct {
 			ProjectID          string `json:"project_id"`
 			ProjectDescription string `json:"project_description"`
+			IssueDescription   string `json:"issue_description"`
 		} `json:"task"`
 	}
 	w.JSON(&resp)
@@ -2093,6 +2096,9 @@ func TestClaimTask_ProjectDescriptionInjected(t *testing.T) {
 	}
 	if resp.Task.ProjectDescription != projectDescription {
 		t.Errorf("project_description = %q, want %q", resp.Task.ProjectDescription, projectDescription)
+	}
+	if resp.Task.IssueDescription != issueDescription {
+		t.Errorf("issue_description = %q, want %q", resp.Task.IssueDescription, issueDescription)
 	}
 }
 
