@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev
+.PHONY: help makehelp dev server daemon cli multica build-sessions-devtools build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev
 
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
@@ -29,6 +29,11 @@ LOCAL_UPLOAD_BASE_URL ?= http://localhost:$(PORT)
 export
 
 MULTICA_ARGS ?= $(ARGS)
+
+# Local-only builder for the DevTools Sessions CLI used by this integration.
+# Override the source path when the vetted DevBox Client worktree moves.
+SESSIONS_DEVTOOLS_SOURCE ?= $(HOME)/.codex/worktrees/devbox-client-multica-e2e-cli
+SESSIONS_DEVTOOLS_BIN ?= /tmp/multica-devtools
 
 COMPOSE := docker compose
 
@@ -75,6 +80,21 @@ help: ## Show available make targets and common local workflows
 		/^[a-zA-Z0-9_.-]+:.*## / {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 makehelp: help ## Alias for `make help`
+
+# ---------- Local Sessions integration ----------
+##@ Local Sessions integration
+
+build-sessions-devtools: ## Build the vetted local DevTools Sessions CLI at /tmp/multica-devtools
+	@test -f "$(SESSIONS_DEVTOOLS_SOURCE)/devtools/cmd/devtools/main.go" || { \
+		echo "DevTools source is missing: $(SESSIONS_DEVTOOLS_SOURCE)"; \
+		echo "Set SESSIONS_DEVTOOLS_SOURCE to the vetted DevBox Client worktree."; \
+		exit 1; \
+	}
+	@echo "==> Building DevTools Sessions CLI from $(SESSIONS_DEVTOOLS_SOURCE)..."
+	@cd "$(SESSIONS_DEVTOOLS_SOURCE)" && go build -o "$(SESSIONS_DEVTOOLS_BIN)" ./devtools/cmd/devtools
+	@"$(SESSIONS_DEVTOOLS_BIN)" session dispatch --help | grep -q -- '--max-spend-usd' || { echo "Built CLI lacks --max-spend-usd"; exit 1; }
+	@"$(SESSIONS_DEVTOOLS_BIN)" session dispatch --help | grep -q -- '--mcp-scope' || { echo "Built CLI lacks --mcp-scope"; exit 1; }
+	@echo "==> Built $(SESSIONS_DEVTOOLS_BIN)"
 
 # ---------- Self-hosting (Docker Compose) ----------
 ##@ Self-hosting
