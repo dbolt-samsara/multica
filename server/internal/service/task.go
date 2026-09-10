@@ -90,6 +90,43 @@ type TaskService struct {
 	analyticsContextOrder []string
 }
 
+// ErrSessionsInvocationNotAllowed rejects a queue entry before a hidden
+// Sessions backend could ever receive it. Sessions are deliberately narrower
+// than ordinary agent runtimes: their only supported input is a private
+// agent owner's direct claim of an existing issue.
+var ErrSessionsInvocationNotAllowed = errors.New("Sessions agents accept only directly claimed private owner issue work")
+
+func (s *TaskService) isSessionsAgent(ctx context.Context, agent db.Agent) (bool, error) {
+	if !agent.RuntimeID.Valid {
+		return false, nil
+	}
+	runtime, err := s.Queries.GetAgentRuntime(ctx, agent.RuntimeID)
+	if err != nil {
+		return false, fmt.Errorf("load agent runtime: %w", err)
+	}
+	return runtime.Provider == "sessions", nil
+}
+
+// validateSessionsIssueInvocation keeps the Sessions boundary at the durable
+// task queue. HTTP admission is friendlier, but every enqueue route must also
+// fail closed here: autopilot, squads, handoffs, and delegated agent work all
+// eventually create a task through one of these shared paths.
+func (s *TaskService) validateSessionsIssueInvocation(ctx context.Context, agent db.Agent, issue db.Issue, attr attribution.Result, isLeader bool, handoffNote string) error {
+	sessions, err := s.isSessionsAgent(ctx, agent)
+	if err != nil {
+		return err
+	}
+	if !sessions {
+		return nil
+	}
+	if agent.PermissionMode != "private" || attr.Source != attribution.SourceDirectHuman ||
+		!attr.UserID.Valid || util.UUIDToString(attr.UserID) != util.UUIDToString(agent.OwnerID) ||
+		isLeader || handoffNote != "" || issue.OriginType.Valid {
+		return ErrSessionsInvocationNotAllowed
+	}
+	return nil
+}
+
 type SourceContextObjectStore interface {
 	DeleteObject(ctx context.Context, key string) error
 	KeyFromURL(rawURL string) string
@@ -1264,6 +1301,9 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		slog.Warn("task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(issue.AssigneeID))
 		return db.AgentTaskQueue{}, err
 	}
+	if err := s.validateSessionsIssueInvocation(ctx, agent, issue, attr, false, handoffNote); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
@@ -1421,6 +1461,9 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 		slog.Warn("mention task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 		return db.AgentTaskQueue{}, err
 	}
+	if err := s.validateSessionsIssueInvocation(ctx, agent, issue, attr, isLeader, handoffNote); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
@@ -1553,6 +1596,11 @@ func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, r
 	}
 	if !agent.RuntimeID.Valid {
 		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
+	}
+	if sessions, err := s.isSessionsAgent(ctx, agent); err != nil {
+		return db.AgentTaskQueue{}, err
+	} else if sessions {
+		return db.AgentTaskQueue{}, ErrSessionsInvocationNotAllowed
 	}
 
 	payload := QuickCreateContext{

@@ -1128,6 +1128,15 @@ func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	visible := make([]AgentResponse, 0, len(agents))
 	for _, a := range agents {
+		// Sessions workers are issue-only. ListAgents is also the source for
+		// every Chat agent picker, so omit them here rather than relying on a
+		// client-side convention or a later CreateChatSession rejection.
+		if sessions, err := h.isSessionsAgent(r.Context(), a); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load agent runtime")
+			return
+		} else if sessions {
+			continue
+		}
 		targets := targetsByAgent[uuidToString(a.ID)]
 		if actorType == "member" {
 			if !memberAllowedToViewAgent(a, targets, actorID, member.Role) {

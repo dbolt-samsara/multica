@@ -30,7 +30,7 @@ const chatSessionTitleMaxLen = 200
 // sessionsAgentForbidsChat preserves the product split: Controller Chat stays
 // on its configured Agent Gateway path, while a Sessions worker is issue-only.
 // This is an identity/runtime decision, never prompt-text routing or fallback.
-func (h *Handler) sessionsAgentForbidsChat(ctx context.Context, agent db.Agent) (bool, error) {
+func (h *Handler) isSessionsAgent(ctx context.Context, agent db.Agent) (bool, error) {
 	if !agent.RuntimeID.Valid {
 		return false, nil
 	}
@@ -39,6 +39,21 @@ func (h *Handler) sessionsAgentForbidsChat(ctx context.Context, agent db.Agent) 
 		return false, err
 	}
 	return runtime.Provider == "sessions", nil
+}
+
+func (h *Handler) sessionsAgentForbidsChat(ctx context.Context, agent db.Agent) (bool, error) {
+	return h.isSessionsAgent(ctx, agent)
+}
+
+// chatAgentCanAppear keeps an already-created Sessions chat from becoming a
+// picker/list back door after the runtime is marked issue-only.
+func (h *Handler) chatAgentCanAppear(ctx context.Context, agentID pgtype.UUID) (bool, error) {
+	agent, err := h.Queries.GetAgent(ctx, agentID)
+	if err != nil {
+		return false, err
+	}
+	sessions, err := h.isSessionsAgent(ctx, agent)
+	return !sessions, err
 }
 
 // ---------------------------------------------------------------------------
@@ -216,6 +231,14 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 			if _, ok := allowed[uuidToString(s.AgentID)]; !ok {
 				continue
 			}
+			visible, err := h.chatAgentCanAppear(r.Context(), s.AgentID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to load agent runtime")
+				return
+			}
+			if !visible {
+				continue
+			}
 			resp = append(resp, ChatSessionResponse{
 				ID:          uuidToString(s.ID),
 				WorkspaceID: uuidToString(s.WorkspaceID),
@@ -244,6 +267,14 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 		resp = make([]ChatSessionResponse, 0, len(rows))
 		for _, s := range rows {
 			if _, ok := allowed[uuidToString(s.AgentID)]; !ok {
+				continue
+			}
+			visible, err := h.chatAgentCanAppear(r.Context(), s.AgentID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to load agent runtime")
+				return
+			}
+			if !visible {
 				continue
 			}
 			resp = append(resp, ChatSessionResponse{
