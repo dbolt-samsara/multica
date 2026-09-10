@@ -20,7 +20,7 @@ type SessionsExecOptions struct {
 }
 type sessionsBackend struct{ cfg Config }
 
-var immutableSessionsRepository = regexp.MustCompile(`^[^/@\s]+/[^/@\s]+@[0-9a-f]{40}$`)
+var immutableSessionsRepository = regexp.MustCompile(`^[^/@\s]+/[^/@\s]+@(?:[0-9a-f]{40}|main)$`)
 
 func (b *sessionsBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
 	o := opts.Sessions

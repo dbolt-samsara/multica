@@ -152,6 +152,24 @@ exit 1
 	}
 }
 
+func TestSessionsBackendAllowsSupportedMainBranch(t *testing.T) {
+	script, _ := writeFakeDevtools(t)
+	backend, err := ResolveBackend("sessions", Config{ExecutablePath: script, Env: map[string]string{
+		"FAKE_CALLS": os.Getenv("FAKE_CALLS"), "FAKE_PROMPT": os.Getenv("FAKE_PROMPT"),
+	}, Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = backend.Execute(t.Context(), "prompt", ExecOptions{Model: "devtools/standard", Sessions: &SessionsExecOptions{
+		Repository: "samsara-dev/devbox-client@main", Thread: "multica:task-main",
+		MCPScopes: []string{"mcp:github"}, MaxSpendUSD: 1,
+		PersistSessionID: func(context.Context, string) error { return nil },
+	}})
+	if err != nil {
+		t.Fatalf("Execute(main): %v", err)
+	}
+}
+
 func TestSessionsBackendRejectsUnsafeOptions(t *testing.T) {
 	backend := &sessionsBackend{cfg: Config{ExecutablePath: "/missing/devtools", Logger: slog.Default()}}
 	base := SessionsExecOptions{
