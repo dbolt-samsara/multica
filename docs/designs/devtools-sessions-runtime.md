@@ -2,7 +2,7 @@
 
 ## Status
 
-Design loop complete. Two independent adversarial reviews returned **MEETS** after amendments. No implementation, Session creation, credential change, deployment, or production use is authorized by this document.
+**Approved by Derek on 2026-09-09.** Two independent adversarial reviews returned **MEETS** after amendments. This approval fixes the design direction and permits implementation planning. It does not by itself authorize source implementation, Session creation, credential changes, deployment, or production use.
 
 ## Goal
 
