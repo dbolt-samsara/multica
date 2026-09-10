@@ -26,6 +26,16 @@ func TestSessionsEligibilityGates(t *testing.T) {
 	})
 	agentUUID := parseUUID(agentID)
 
+	// The generic agent list feeds issue assignment as well as management UI.
+	// Sessions must remain selectable for its one permitted path; only the
+	// dedicated Chat surfaces may suppress it.
+	listed := testutil.Call(t, testHandler.ListAgents,
+		newRequest(http.MethodGet, "/api/agents?workspace_id="+testWorkspaceID, nil),
+	).Want(http.StatusOK)
+	if !listContainsAgent(t, listed.Body.Bytes(), agentID) {
+		t.Fatalf("owner ListAgents omitted Sessions issue worker %s", agentID)
+	}
+
 	ownerReq := newRequest(http.MethodPost, "/api/issues?workspace_id="+testWorkspaceID, nil)
 	if status, message := testHandler.validateAssigneePair(ctx, ownerReq, testWorkspaceID, pgtype.Text{String: "agent", Valid: true}, agentUUID); status != 0 {
 		t.Fatalf("owner direct issue admission = (%d, %q), want success", status, message)
