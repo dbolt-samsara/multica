@@ -171,12 +171,6 @@ var probeAgentCLIs = func() map[string]AgentEntry {
 	}
 
 	agents := map[string]AgentEntry{}
-	// Sessions is intentionally opt-in: unlike ordinary local CLIs it never
-	// probes PATH or a login shell. The later registration round runs its
-	// read-only auth/list preflight before advertising the runtime.
-	if entry, ok := probeSessionsExecutable(); ok {
-		agents["sessions"] = entry
-	}
 	if e, ok := probe("MULTICA_CLAUDE_PATH", "claude", "MULTICA_CLAUDE_MODEL"); ok {
 		agents["claude"] = e
 	}

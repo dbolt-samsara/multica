@@ -2485,15 +2485,6 @@ func (d *Daemon) detectBuiltinRuntimes(ctx context.Context) ([]map[string]string
 	for name, entry := range d.agents() {
 		name, entry := name, entry
 		g.Go(func() error {
-			if name == "sessions" {
-				if err := preflightSessionsExecutable(ctx, entry); err != nil {
-					mu.Lock()
-					skipped[name] = err.Error()
-					unavailable[name] = err.Error()
-					mu.Unlock()
-					return nil
-				}
-			}
 			version, reason, verdict := d.probeBuiltinRuntime(ctx, name, entry)
 			if verdict != builtinProbeOK {
 				// A not-executable verdict is deterministic, but the file can be
@@ -6095,9 +6086,6 @@ func init() {
 
 // providerDisplayName returns the human-facing runtime name for a provider key.
 func providerDisplayName(name string) string {
-	if name == "sessions" {
-		return "DevTools Sessions"
-	}
 	if name == "" {
 		return name
 	}
