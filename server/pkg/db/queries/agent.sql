@@ -2748,3 +2748,18 @@ RETURNING *;
 
 -- name: GetCommentThreadRootID :one
 SELECT comment_thread_root_id(@comment_id::uuid)::uuid AS id;
+
+-- name: MarkSessionsRemoteCleanupUnknown :exec
+-- A Sessions cancellation can leave a remote Runtime Cloud worker alive. Record
+-- that obligation in the same transaction as the local cancellation so an ack
+-- lost during a daemon crash never makes cancellation look proved.
+UPDATE agent_task_queue AS task
+SET context = COALESCE(task.context, '{}'::jsonb) || jsonb_build_object(
+  'sessions_remote_cleanup', jsonb_strip_nulls(jsonb_build_object(
+    'status', 'unknown',
+    'remote_session_id', task.session_id
+  ))
+)
+WHERE task.id = $1
+  AND task.status = 'cancelled'
+  AND EXISTS (SELECT 1 FROM agent_runtime runtime WHERE runtime.id = task.runtime_id AND runtime.provider = 'sessions');

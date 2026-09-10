@@ -2872,6 +2872,11 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 				return err
 			}
 			task = cancelled
+			// This is a same-transaction marker: a Sessions cancellation is not
+			// proof that the remote worker stopped until the daemon readback ack.
+			if err := qtx.MarkSessionsRemoteCleanupUnknown(ctx, task.ID); err != nil {
+				return fmt.Errorf("mark Sessions remote cleanup unknown: %w", err)
+			}
 			// CancelAgentTaskByUser appends the recovery receipt in the same
 			// statement, so the returned row already carries it.
 			if err := SettleDeliveredDelegatedFailureRecoveries(ctx, qtx, cancelled); err != nil {

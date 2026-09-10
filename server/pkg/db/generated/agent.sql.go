@@ -6638,6 +6638,27 @@ func (q *Queries) MarkChatFinalizeDeferred(ctx context.Context, id pgtype.UUID) 
 	return i, err
 }
 
+const markSessionsRemoteCleanupUnknown = `-- name: MarkSessionsRemoteCleanupUnknown :exec
+UPDATE agent_task_queue AS task
+SET context = COALESCE(task.context, '{}'::jsonb) || jsonb_build_object(
+  'sessions_remote_cleanup', jsonb_strip_nulls(jsonb_build_object(
+    'status', 'unknown',
+    'remote_session_id', task.session_id
+  ))
+)
+WHERE task.id = $1
+  AND task.status = 'cancelled'
+  AND EXISTS (SELECT 1 FROM agent_runtime runtime WHERE runtime.id = task.runtime_id AND runtime.provider = 'sessions')
+`
+
+// A Sessions cancellation can leave a remote Runtime Cloud worker alive. Record
+// that obligation in the same transaction as the local cancellation so an ack
+// lost during a daemon crash never makes cancellation look proved.
+func (q *Queries) MarkSessionsRemoteCleanupUnknown(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markSessionsRemoteCleanupUnknown, id)
+	return err
+}
+
 const mergeCommentIntoPendingTask = `-- name: MergeCommentIntoPendingTask :one
 UPDATE agent_task_queue
 SET coalesced_comment_ids = (
