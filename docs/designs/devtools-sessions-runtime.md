@@ -21,7 +21,7 @@ Existing Chat providers remain unchanged. A Sessions-bound Worker is issue-only:
 
 ## User-visible first increment
 
-1. Install and authenticate the `devtools` CLI on the computer that runs the Multica daemon.
+1. Install and authenticate the `devtools` CLI on the computer that runs the Multica daemon, then set `MULTICA_SESSIONS_PATH` to its absolute executable path.
 2. Multica detects one **DevTools Sessions** runtime.
 3. Create one Worker agent bound to that runtime.
 4. Assign one GitHub-backed issue to the Worker.
@@ -197,7 +197,7 @@ Before create, the daemon builds the complete CLI intent once in memory—prompt
 
 ### Runtime discovery
 
-- Detect `devtools` through `MULTICA_SESSIONS_PATH` or `PATH`.
+- Enable and detect the runtime only when `MULTICA_SESSIONS_PATH` names an executable absolute path. Do not add `devtools` to default PATH/login-shell probing; omission keeps the fork byte-for-byte on the upstream discovery path.
 - Run the exact read-only preflight `devtools auth status`, then `devtools session list --json --limit 1`. Register the runtime online only when the executable, usable human login cache, and the default Agent Gateway Sessions door all succeed. Every dispatch/watch/get/cancel command also omits `-e` and therefore uses that same door. Neither preflight command creates a Session.
 - Run under one declared daemon OS user and that user's persistent `HOME`/DevTools OAuth cache. The CLI resolves authorization per request; Multica never copies token text into its database, agent environment, prompt, or logs. Login, expiry, revocation, and reauthentication remain owned by `devtools auth login` outside a task.
 - The prototype runtime and Worker are private. Server authorization requires the human initiating the issue run to equal the runtime owner. Other workspace members, agent-to-agent handoffs, Autopilots, quick-create, and squads cannot invoke it.
@@ -243,6 +243,52 @@ Owning code: `server/internal/daemon/config.go`, `agents_probe.go`, and the exis
 - Provider-aware failure classification prevents automatic retries for Sessions-bound tasks.
 
 No new database table, task state, queue, runtime pool, UI page, logo, or configuration form is required.
+
+## Upstream-friendly fork structure
+
+The fork should isolate the feature without creating a general remote-runtime framework. Prefer additive files and a few explicit hook points.
+
+### New files own the feature
+
+- `server/pkg/agent/sessions.go`: `devtools session` process lifecycle and JSON/NDJSON translation only.
+- `server/internal/daemon/sessions_task.go`: issue-task eligibility, fixed intent construction, synchronous Session-ID pin, final mapping, and cancellation orchestration.
+- `server/internal/daemon/sessions_prompt.go`: the self-contained Runtime Cloud prompt.
+- Focused `_test.go` files beside those owners.
+
+Do not copy existing provider, task-runner, or prompt functions into the new files. Call existing stable helpers and keep one owner for shared behavior.
+
+### Existing files contain narrow hooks
+
+- `agents_probe.go` and `config.go`: detect one additional executable/provider.
+- `builtin_runtimes.go`: one explicit standalone `sessions` branch in `ResolveBackend`.
+- `daemon.go`: one early `provider == "sessions"` handoff before local preparation, plus the new per-run fields/callback.
+- Claim/daemon task types: the missing issue description only.
+- Chat handlers and picker helpers: one shared eligibility predicate rejecting the Sessions Worker.
+- Cancellation handler/task detail: initialize, refine, and display remote-cleanup status.
+- Backend/frontend display-name maps: one label entry.
+
+Avoid sessions-specific conditionals elsewhere. If two surfaces need the same decision, use one small named predicate rather than duplicating provider-string checks.
+
+### Configuration and dependencies
+
+- `MULTICA_SESSIONS_PATH` is the feature switch. When absent or unusable, no Sessions runtime is registered and all upstream behavior remains unchanged.
+- Shell out to the installed `devtools` CLI. Do not vendor devbox-client code, generated Sessions types, an HTTP client, or Bubo event schemas into Multica.
+- Keep the fixed model, scopes, runtime, tool, and spend policy in one sessions-owned configuration value, not scattered constants or UI defaults.
+- Do not change existing provider interfaces more broadly than the typed Sessions intent and synchronous pin callback require.
+
+### Commit and upstream-sync discipline
+
+Keep implementation commits separable:
+
+1. the external CLI spend-flag prerequisite;
+2. isolated backend and daemon adapter with no registration;
+3. narrow registration/eligibility/display hooks;
+4. event projection and cancellation warning; and
+5. disposable end-to-end evidence.
+
+Track the producer repository as `upstream` and regularly integrate `upstream/main` into the fork branch. After each upstream integration, run the focused Sessions contracts first, then Multica's existing daemon/agent/Chat tests. A conflict in shared hook files is resolved by rereading upstream behavior and reapplying the small hook—not by preserving copied old code or adding a compatibility layer.
+
+If upstream changes make these hooks large or repeatedly conflict, stop and reconsider the seam. Do not solve merge pain by forking entire subsystems.
 
 ## Retry and crash boundary
 
@@ -312,6 +358,9 @@ Each step is independently reviewable and leaves the existing Chat and local pro
 - Focused cancellation tests cover cancel before Session-ID pin, cancel after pin, lost daemon acknowledgement, failed readback, and confirmed terminal readback.
 - Sessions-bound task failures never enter Multica's automatic retry path.
 - Existing Chat and non-Sessions runtime behavior is byte-for-byte unchanged by focused regression tests.
+- Feature logic is owned by the new Sessions files; existing upstream files contain only the listed registration, handoff, eligibility, cancellation, and display hooks.
+- With `MULTICA_SESSIONS_PATH` absent, focused regression tests prove the fork behaves like upstream for runtime discovery, Chat, and issue execution.
+- The implementation branch integrates the latest `upstream/main` without retaining copied provider/task-runner code or introducing compatibility fallbacks.
 - No item in the non-goals is implemented as part of this increment.
 
 ## Evidence and open decisions
