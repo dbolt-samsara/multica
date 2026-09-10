@@ -29,6 +29,15 @@ LOCAL_UPLOAD_BASE_URL ?= http://localhost:$(PORT)
 export
 
 MULTICA_ARGS ?= $(ARGS)
+COREPACK ?= $(shell command -v corepack)
+# Keep the Corepack shim first when Turborepo starts package scripts. Those
+# nested scripts invoke `pnpm` by name, so invoking `corepack pnpm` only at the
+# top level is not enough when another pnpm is earlier in the inherited PATH.
+PNPM ?= PATH="$(CURDIR)/scripts:$$PATH" COREPACK_BIN="$(COREPACK)" "$(COREPACK)" pnpm
+# `make up` starts component targets through a child make. Do not export the
+# recursive command: an exported `$$PATH` is parsed again by that child and
+# can turn the inherited PATH into a literal, incomplete value.
+unexport PNPM COREPACK
 
 # Local-only builder for the DevTools Sessions CLI used by this integration.
 # Override the source path when the vetted DevBox Client worktree moves.
@@ -204,10 +213,10 @@ api-dev: ## Run only the Go backend for the current env file
 	cd server && go run -ldflags "-X main.commit=$(COMMIT)" ./cmd/server
 
 web-dev: ## Run only the Next.js dev server for the current env file
-	pnpm dev:web
+	$(PNPM) dev:web
 
 desktop-dev: ## Run only the Electron desktop app for the current env file
-	pnpm dev:desktop
+	$(PNPM) dev:desktop
 
 # ---------- One-click commands ----------
 ##@ One-click

@@ -166,6 +166,10 @@ export function envWithLocalBins(env = process.env, root = desktopRoot) {
     Object.keys(env).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
   const existingPath = env[pathKey] ?? "";
   const localBins = uniqueOrdered([
+    // `electron-vite` and its wrappers invoke `node` by name. A detached
+    // `make up` launcher can have a reduced PATH, so retain the node binary
+    // that launched this script as an explicit runtime dependency.
+    dirname(process.execPath),
     resolve(root, "node_modules", ".bin"),
     resolve(root, "..", "..", "node_modules", ".bin"),
   ]);

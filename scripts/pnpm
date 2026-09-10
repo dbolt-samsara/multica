@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Project-local pnpm shim for nested Turborepo package scripts.
+# The repository's packageManager field is the version authority. `make up`
+# can start with a reduced PATH, so use the inherited absolute Corepack path.
+if [ -n "${COREPACK_BIN:-}" ] && [ -x "$COREPACK_BIN" ]; then
+  exec "$COREPACK_BIN" pnpm "$@"
+fi
+exec corepack pnpm "$@"
