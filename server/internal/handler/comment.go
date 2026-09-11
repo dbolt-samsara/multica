@@ -20,6 +20,7 @@ import (
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
+	agentpkg "github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -1926,8 +1927,8 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 
 // validateCommentModelOverride keeps model choice a structured delegation
 // option rather than prompt parsing. A model can target exactly one explicitly
-// mentioned Sessions agent; the model selector itself remains opaque and is
-// passed to AgentGateway verbatim after trimming surrounding whitespace.
+// mentioned model-capable agent; the model selector itself remains opaque and is
+// passed to the selected runtime verbatim after trimming surrounding whitespace.
 func (h *Handler) validateCommentModelOverride(w http.ResponseWriter, r *http.Request, issue db.Issue, content, rawModel, actorType, actorID, originatorUserID string) (string, pgtype.UUID, bool) {
 	model := strings.TrimSpace(rawModel)
 	if model == "" {
@@ -1968,8 +1969,8 @@ func (h *Handler) validateCommentModelOverride(w http.ResponseWriter, r *http.Re
 		return "", pgtype.UUID{}, false
 	}
 	runtime, err := h.Queries.GetAgentRuntimeForWorkspace(r.Context(), db.GetAgentRuntimeForWorkspaceParams{ID: targetAgent.RuntimeID, WorkspaceID: issue.WorkspaceID})
-	if err != nil || runtime.Provider != "sessions" {
-		writeError(w, http.StatusBadRequest, "per-task model selection is supported only for the Sessions runtime")
+	if err != nil || !agentpkg.ModelSelectionSupported(runtime.Provider) {
+		writeError(w, http.StatusBadRequest, "the selected agent runtime does not support per-task model selection")
 		return "", pgtype.UUID{}, false
 	}
 	return model, targetID, true

@@ -41,6 +41,21 @@ func quietTaskLog() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+func TestInitialTaskModelPrecedence(t *testing.T) {
+	task := Task{ModelOverride: "  per-run/model  ", Agent: &AgentData{Model: "agent/model"}}
+	if got := initialTaskModel(task, "runtime/model"); got != "per-run/model" {
+		t.Fatalf("initialTaskModel override = %q", got)
+	}
+	task.ModelOverride = ""
+	if got := initialTaskModel(task, "runtime/model"); got != "agent/model" {
+		t.Fatalf("initialTaskModel agent default = %q", got)
+	}
+	task.Agent.Model = ""
+	if got := initialTaskModel(task, "runtime/model"); got != "runtime/model" {
+		t.Fatalf("initialTaskModel runtime default = %q", got)
+	}
+}
+
 // thinkingCatalogs mirrors the shapes the reporter's gateway config produces:
 // a slash-shaped model id under a custom provider, advertising a reasoning
 // catalog. codex carries a service tier so the codex-specific paths are real.

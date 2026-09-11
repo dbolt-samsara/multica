@@ -27,6 +27,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
 	"github.com/multica-ai/multica/server/internal/util"
+	agentpkg "github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
@@ -117,12 +118,12 @@ func (s *TaskService) validateTaskModelOverride(ctx context.Context, agent db.Ag
 	if model == "" {
 		return pgtype.Text{}, fmt.Errorf("model override is empty")
 	}
-	sessions, err := s.isSessionsAgent(ctx, agent)
+	runtime, err := s.Queries.GetAgentRuntime(ctx, agent.RuntimeID)
 	if err != nil {
-		return pgtype.Text{}, err
+		return pgtype.Text{}, fmt.Errorf("load agent runtime for model override: %w", err)
 	}
-	if !sessions {
-		return pgtype.Text{}, fmt.Errorf("per-task model override requires the Sessions runtime")
+	if !agentpkg.ModelSelectionSupported(runtime.Provider) {
+		return pgtype.Text{}, fmt.Errorf("per-task model override is not supported by runtime %q", runtime.Provider)
 	}
 	return pgtype.Text{String: model, Valid: true}, nil
 }
@@ -1245,7 +1246,7 @@ func (s *TaskService) EnqueueTaskForIssueByActor(ctx context.Context, issue db.I
 }
 
 // EnqueueTaskForIssueWithModel is the direct-human issue-create path for a
-// Sessions per-run model. The override is persisted on the new task and never
+// per-run model. The override is persisted on the new task and never
 // mutates the assigned agent's shared default.
 func (s *TaskService) EnqueueTaskForIssueWithModel(ctx context.Context, issue db.Issue, modelOverride string) (db.AgentTaskQueue, error) {
 	model := strings.TrimSpace(modelOverride)
@@ -1461,9 +1462,9 @@ func (s *TaskService) EnqueueTaskForMention(ctx context.Context, issue db.Issue,
 	return s.enqueueMentionTask(ctx, issue, agentID, triggerCommentID, false, pgtype.UUID{}, false, "", pgtype.UUID{}, pgtype.UUID{})
 }
 
-// EnqueueTaskForMentionWithModel is the Sessions-only delegation path. The
+// EnqueueTaskForMentionWithModel is the per-run model delegation path. The
 // override is stored on the task, never on the shared agent, so concurrent
-// delegations can select different AgentGateway routes without racing.
+// delegations can select different models without racing.
 func (s *TaskService) EnqueueTaskForMentionWithModel(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, modelOverride string) (db.AgentTaskQueue, error) {
 	return s.enqueueMentionTaskWithCommentPlan(ctx, issue, agentID, triggerCommentID, nil, false, pgtype.UUID{}, false, "", pgtype.UUID{}, pgtype.UUID{}, pgtype.Text{String: strings.TrimSpace(modelOverride), Valid: strings.TrimSpace(modelOverride) != ""})
 }

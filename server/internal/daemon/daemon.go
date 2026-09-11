@@ -7101,6 +7101,16 @@ type taskModelSelection struct {
 	ServiceTier   string
 }
 
+func initialTaskModel(task Task, runtimeDefault string) string {
+	if model := strings.TrimSpace(task.ModelOverride); model != "" {
+		return model
+	}
+	if task.Agent != nil && task.Agent.Model != "" {
+		return task.Agent.Model
+	}
+	return runtimeDefault
+}
+
 // resolveTaskModelSelection settles the model selector and its capability
 // overrides against the runtime's own model catalog, reading that catalog at
 // most once per task — and not at all when nothing needs it.
@@ -8192,9 +8202,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, fmt.Errorf("create agent backend: %w", err)
 	}
 
-	// Two-tier model resolution: an explicit agent.model wins,
-	// then the daemon-wide MULTICA_<PROVIDER>_MODEL env var. If
-	// both are empty we deliberately pass "" through — each
+	// Three-tier model resolution: a per-task override wins, then an explicit
+	// agent.model, then the daemon-wide MULTICA_<PROVIDER>_MODEL env var. If
+	// all are empty we deliberately pass "" through — each
 	// backend omits `--model` from the CLI invocation, so the
 	// provider picks its own default (Claude Code's shipped
 	// default, codex app-server's account-scoped default, etc.).
@@ -8206,13 +8216,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// entry.Model there reported the env-var tier alone, so every task whose
 	// model came from agent.model — the common case — announced itself with an
 	// empty model and looked like the selection had been dropped (GH #7300).
-	model := ""
-	if task.Agent != nil && task.Agent.Model != "" {
-		model = task.Agent.Model
-	}
-	if model == "" {
-		model = entry.Model
-	}
+	model := initialTaskModel(task, entry.Model)
 
 	taskLog.Info("starting agent",
 		"provider", provider,

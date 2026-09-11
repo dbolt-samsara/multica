@@ -2940,17 +2940,17 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !assigneeType.Valid || assigneeType.String != "agent" || !assigneeID.Valid {
-			writeError(w, http.StatusBadRequest, "model requires a Sessions agent assignee")
+			writeError(w, http.StatusBadRequest, "model requires an agent assignee")
 			return
 		}
 		assignedAgent, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{ID: assigneeID, WorkspaceID: wsUUID})
 		if err != nil || !assignedAgent.RuntimeID.Valid {
-			writeError(w, http.StatusBadRequest, "model requires a runnable Sessions agent assignee")
+			writeError(w, http.StatusBadRequest, "model requires a runnable agent assignee")
 			return
 		}
 		runtime, err := h.Queries.GetAgentRuntimeForWorkspace(r.Context(), db.GetAgentRuntimeForWorkspaceParams{ID: assignedAgent.RuntimeID, WorkspaceID: wsUUID})
-		if err != nil || runtime.Provider != "sessions" {
-			writeError(w, http.StatusBadRequest, "per-task model selection is supported only for the Sessions runtime")
+		if err != nil || !agentpkg.ModelSelectionSupported(runtime.Provider) {
+			writeError(w, http.StatusBadRequest, "the selected agent runtime does not support per-task model selection")
 			return
 		}
 		if issuestatus.Effective(r.Context(), h.Queries, wsUUID, status) == "backlog" {
