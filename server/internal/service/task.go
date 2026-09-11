@@ -122,7 +122,7 @@ func (s *TaskService) validateSessionsIssueInvocation(ctx context.Context, agent
 		return nil
 	}
 	if !attr.UserID.Valid || util.UUIDToString(attr.UserID) != util.UUIDToString(agent.OwnerID) ||
-		isLeader || handoffNote != "" || issue.OriginType.Valid {
+		isLeader || handoffNote != "" {
 		return ErrSessionsInvocationNotAllowed
 	}
 	if attr.Source == attribution.SourceDirectHuman {

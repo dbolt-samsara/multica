@@ -99,7 +99,8 @@ func TestSessionsEligibilityGates(t *testing.T) {
 	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'running' WHERE id = $1`, controllerTaskID)
 	delegatedIssueID := dbfx.Issue(t, "Sessions delegated issue", testutil.Cols{
 		"assignee_type": "agent", "assignee_id": delegatedWorkerID,
-		"creator_type": "member", "creator_id": testUserID,
+		"creator_type": "agent", "creator_id": controllerID,
+		"origin_type": "agent_create", "origin_id": controllerTaskID,
 	})
 	delegatedIssue, err := testHandler.Queries.GetIssue(ctx, parseUUID(delegatedIssueID))
 	if err != nil {
