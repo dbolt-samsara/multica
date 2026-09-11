@@ -18,9 +18,10 @@ import (
 
 // RepoContextForEnv describes a workspace repo available for checkout.
 type RepoContextForEnv struct {
-	URL         string // remote URL
-	Description string // optional repo description
-	Ref         string // optional default checkout ref for this task
+	URL             string // remote URL
+	Description     string // optional repo description
+	Ref             string // optional default checkout ref for this task
+	ExpectedHeadSHA string // optional immutable PR head guard; distinct from Ref
 }
 
 // ProjectResourceForEnv describes a single resource attached to the issue's

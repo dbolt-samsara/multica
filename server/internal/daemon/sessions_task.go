@@ -64,11 +64,8 @@ func buildSessionsIntent(task Task) (sessionsIntent, error) {
 func immutableGitHubRepository(repo RepoData) (string, error) {
 	raw := strings.TrimSpace(repo.URL)
 	ref := strings.TrimSpace(repo.Ref)
-	// A full SHA is the normal immutable form. The explicitly supported `main`
-	// branch is permitted for environments whose Session gateway requires a
-	// branch checkout and rejects detached commits without a base intent.
-	if raw == "" || (!fullGitSHA.MatchString(ref) && ref != "main") {
-		return "", fmt.Errorf("Sessions runtime requires a GitHub repository pinned to a full commit SHA or the supported main branch")
+	if raw == "" || !validGitCheckoutRef(ref) {
+		return "", fmt.Errorf("Sessions runtime requires a valid Git branch or full commit SHA checkout ref")
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Host != "github.com" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
@@ -80,6 +77,28 @@ func immutableGitHubRepository(repo RepoData) (string, error) {
 		return "", fmt.Errorf("Sessions runtime requires owner/repository form")
 	}
 	return parts[0] + "/" + parts[1] + "@" + ref, nil
+}
+
+// validGitCheckoutRef mirrors the safety-relevant rules from
+// `git check-ref-format --branch` without executing a user-installed git. The
+// Sessions API accepts owner/repo@ref strings, so malformed refs must fail
+// before dispatch rather than changing how that string is interpreted.
+func validGitCheckoutRef(ref string) bool {
+	if ref == "" || ref == "@" || strings.HasPrefix(ref, "-") || strings.HasPrefix(ref, "/") || strings.HasSuffix(ref, "/") ||
+		strings.HasSuffix(ref, ".") || strings.Contains(ref, "//") || strings.Contains(ref, "..") || strings.Contains(ref, "@{") {
+		return false
+	}
+	for _, part := range strings.Split(ref, "/") {
+		if part == "" || strings.HasPrefix(part, ".") || strings.HasSuffix(part, ".lock") {
+			return false
+		}
+	}
+	for _, r := range ref {
+		if r < 0x20 || r == 0x7f || strings.ContainsRune(" ~^:?*[\\", r) {
+			return false
+		}
+	}
+	return true
 }
 
 func buildSessionsPrompt(task Task, repository string) string {
@@ -108,6 +127,9 @@ func buildSessionsPrompt(task Task, repository string) string {
 		fmt.Fprintf(&b, "\nCoalesced comment (%s):\n%s\n", comment.AuthorName, comment.Content)
 	}
 	fmt.Fprintf(&b, "\nRepository: %s\n", repository)
+	if len(task.Repos) == 1 && fullGitSHA.MatchString(strings.ToLower(strings.TrimSpace(task.Repos[0].ExpectedHeadSHA))) {
+		fmt.Fprintf(&b, "Expected PR head SHA: %s. Verify the checked-out HEAD matches this SHA before editing and immediately before pushing; stop if it changed.\n", strings.TrimSpace(task.Repos[0].ExpectedHeadSHA))
+	}
 	b.WriteString("Work only on this issue. Do not call Multica. Return a concise final result summary when finished.\n")
 	return b.String()
 }

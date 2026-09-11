@@ -321,7 +321,7 @@ exit 1
 	}
 }
 
-func TestSessionsBackendAllowsSupportedMainBranch(t *testing.T) {
+func TestSessionsBackendAllowsOrdinaryBranch(t *testing.T) {
 	script, _ := writeFakeDevtools(t)
 	backend, err := ResolveBackend("sessions", Config{ExecutablePath: script, Env: map[string]string{
 		"FAKE_CALLS": os.Getenv("FAKE_CALLS"), "FAKE_PROMPT": os.Getenv("FAKE_PROMPT"),
@@ -330,12 +330,12 @@ func TestSessionsBackendAllowsSupportedMainBranch(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = backend.Execute(t.Context(), "prompt", ExecOptions{Model: "devtools/standard", Sessions: &SessionsExecOptions{
-		Repository: "samsara-dev/devbox-client@main", Thread: "multica:task-main",
+		Repository: "samsara-dev/devbox-client@fix/aidev-483-terminal-dispatch-absence", Thread: "multica:task-main",
 		MCPScopes: []string{"mcp:github"}, MaxSpendUSD: 1,
 		PersistSessionID: func(context.Context, string) error { return nil },
 	}})
 	if err != nil {
-		t.Fatalf("Execute(main): %v", err)
+		t.Fatalf("Execute(branch): %v", err)
 	}
 }
 
@@ -349,7 +349,7 @@ func TestSessionsBackendRejectsUnsafeOptions(t *testing.T) {
 		PersistSessionID: func(context.Context, string) error { return nil },
 	}
 	cases := map[string]SessionsExecOptions{
-		"branch ref":        func() SessionsExecOptions { v := base; v.Repository = "samsara-dev/example@main"; return v }(),
+		"malformed branch":  func() SessionsExecOptions { v := base; v.Repository = "samsara-dev/example@feature bad ref"; return v }(),
 		"missing spend":     func() SessionsExecOptions { v := base; v.MaxSpendUSD = 0; return v }(),
 		"missing pin":       func() SessionsExecOptions { v := base; v.PersistSessionID = nil; return v }(),
 		"unsupported scope": func() SessionsExecOptions { v := base; v.MCPScopes = []string{"mcp:sessions"}; return v }(),

@@ -283,7 +283,8 @@ ORDER BY created_at DESC;
 -- locks the owners' workspace rows in the writer's own transaction and returns
 -- false once they are gone, so this statement writes no row instead of stranding
 -- a task in a workspace that has just been deleted (MUL-5999).
--- head_sha stamps the commit under review into the task's context JSONB so the
+-- checkout_ref stamps the PR branch to materialize while head_sha stamps the
+-- commit under review into the task's context JSONB so the
 -- reviewer-loop dedup (HasPendingTaskForIssueAndAgent) can tell a pending run
 -- against an OLD head apart from a fresh request against a NEW head (TEN-356).
 -- Empty/absent head_sha leaves context NULL, preserving pre-TEN-356 behavior for
@@ -313,11 +314,11 @@ SELECT
     COALESCE(sqlc.narg('is_leader_task')::boolean, FALSE),
     sqlc.narg(handoff_note),
     sqlc.narg(squad_id),
-    CASE
-        WHEN COALESCE(sqlc.narg('head_sha')::text, '') <> ''
-        THEN jsonb_build_object('head_sha', sqlc.narg('head_sha')::text)
-        ELSE NULL
-    END,
+    NULLIF(jsonb_strip_nulls(jsonb_build_object(
+        'repository', NULLIF(COALESCE(sqlc.narg('repository')::text, ''), ''),
+        'checkout_ref', NULLIF(COALESCE(sqlc.narg('checkout_ref')::text, ''), ''),
+        'head_sha', NULLIF(COALESCE(sqlc.narg('head_sha')::text, ''), '')
+    )), '{}'::jsonb),
     sqlc.narg(originator_user_id),
     sqlc.narg(accountable_user_id),
     sqlc.narg(runtime_mcp_overlay),
@@ -358,6 +359,8 @@ SELECT
     sqlc.narg(handoff_note),
     sqlc.narg(squad_id),
     jsonb_strip_nulls(jsonb_build_object(
+        'repository', NULLIF(COALESCE(sqlc.narg('repository')::text, ''), ''),
+        'checkout_ref', NULLIF(COALESCE(sqlc.narg('checkout_ref')::text, ''), ''),
         'head_sha', NULLIF(COALESCE(sqlc.narg('head_sha')::text, ''), ''),
         'channel_issue_media_pending', TRUE
     )),

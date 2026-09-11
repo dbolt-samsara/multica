@@ -1299,6 +1299,37 @@ func (s *TaskService) ResolveIssueReviewSHA(ctx context.Context, issueID pgtype.
 	return sha
 }
 
+type issueReviewTarget struct {
+	repository  pgtype.Text
+	checkoutRef pgtype.Text
+	headSHA     pgtype.Text
+}
+
+// resolveIssueReviewTarget keeps PR checkout intent separate from its
+// expected-head write guard. It fails soft for the same reason as
+// ResolveIssueReviewSHA: losing optional review metadata may fall back to the
+// configured project ref, but must never prevent unrelated issue work.
+func (s *TaskService) resolveIssueReviewTarget(ctx context.Context, issueID pgtype.UUID) issueReviewTarget {
+	if !issueID.Valid {
+		return issueReviewTarget{}
+	}
+	target, err := s.Queries.GetIssueReviewTarget(ctx, issueID)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("resolve issue review target failed", "issue_id", util.UUIDToString(issueID), "error", err)
+		}
+		return issueReviewTarget{}
+	}
+	branch := strings.TrimSpace(target.Branch.String)
+	sha := strings.TrimSpace(target.HeadSha)
+	repository := strings.TrimSpace(target.RepoOwner) + "/" + strings.TrimSpace(target.RepoName)
+	return issueReviewTarget{
+		repository:  pgtype.Text{String: repository, Valid: repository != "/"},
+		checkoutRef: pgtype.Text{String: branch, Valid: branch != ""},
+		headSHA:     pgtype.Text{String: sha, Valid: sha != ""},
+	}
+}
+
 // headShaText wraps a resolved review SHA into the pgtype.Text the dedup/enqueue
 // queries expect. Empty SHA marshals to an invalid (NULL) Text so the queries
 // take their fall-back branch.
@@ -1373,6 +1404,7 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
+	reviewTarget := s.resolveIssueReviewTarget(ctx, issue.ID)
 	createParams := db.CreateAgentTaskParams{
 		ID:                   dbid.NewV7(),
 		AgentID:              issue.AssigneeID,
@@ -1397,7 +1429,9 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		ModelOverride:        modelOverride,
 		// Stamp the reviewed head so dedup can distinguish this run's target
 		// from a later request against a new HEAD (TEN-356).
-		HeadSha: headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
+		Repository:  reviewTarget.repository,
+		CheckoutRef: reviewTarget.checkoutRef,
+		HeadSha:     reviewTarget.headSHA,
 	}
 	var task db.AgentTaskQueue
 	if fireAt.Valid {
@@ -1414,6 +1448,8 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 			IsLeaderTask:         createParams.IsLeaderTask,
 			HandoffNote:          createParams.HandoffNote,
 			SquadID:              createParams.SquadID,
+			Repository:           createParams.Repository,
+			CheckoutRef:          createParams.CheckoutRef,
 			HeadSha:              createParams.HeadSha,
 			OriginatorUserID:     createParams.OriginatorUserID,
 			AccountableUserID:    createParams.AccountableUserID,
@@ -1545,6 +1581,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
+	reviewTarget := s.resolveIssueReviewTarget(ctx, issue.ID)
 	task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
 		ID:                   dbid.NewV7(),
 		AgentID:              agentID,
@@ -1571,7 +1608,9 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 		ModelOverride:        modelOverride,
 		// Stamp the reviewed head so dedup can distinguish this run's target
 		// from a later request against a new HEAD (TEN-356).
-		HeadSha: headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
+		Repository:  reviewTarget.repository,
+		CheckoutRef: reviewTarget.checkoutRef,
+		HeadSha:     reviewTarget.headSHA,
 	})
 	if err != nil {
 		// A concurrent enqueue for the same (issue, agent) won the race and the
@@ -6447,6 +6486,7 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 			ruleVersionID = target.source.RuleVersionID
 		}
 		overlay := s.buildRuntimeMCPOverlay(ctx, originator, target.agent)
+		reviewTarget := s.resolveIssueReviewTarget(ctx, target.issue.ID)
 		task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
 			ID:                   dbid.NewV7(),
 			AgentID:              target.agent.ID,
@@ -6466,7 +6506,9 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 			RuleVersionID:        ruleVersionID,
 			TriggerEvidenceKind:  pgtype.Text{String: string(attribution.EvidenceDelegatedFailure), Valid: true},
 			TriggerEvidenceRefID: target.failed.ID,
-			HeadSha:              headShaText(s.ResolveIssueReviewSHA(ctx, target.issue.ID)),
+			Repository:           reviewTarget.repository,
+			CheckoutRef:          reviewTarget.checkoutRef,
+			HeadSha:              reviewTarget.headSHA,
 		})
 		if err == nil {
 			slog.Info("delegated failure recovery task enqueued",

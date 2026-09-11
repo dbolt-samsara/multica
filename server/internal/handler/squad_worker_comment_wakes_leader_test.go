@@ -39,6 +39,27 @@ func TestCreateComment_WorkerAgentCommentWakesSquadLeader_MUL4015(t *testing.T) 
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
 		testPool.Exec(context.Background(), `DELETE FROM comment WHERE issue_id = $1`, issueID)
+		testPool.Exec(context.Background(), `DELETE FROM issue_pull_request WHERE issue_id = $1`, issueID)
+	})
+
+	const checkoutRef = "fix/delegated-pr-head"
+	const expectedHead = "403ae7d19efb37fdbbe8a3a57cb013a68d267ae5"
+	var pullRequestID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO github_pull_request (
+			workspace_id, installation_id, repo_owner, repo_name, pr_number, title,
+			state, html_url, branch, head_sha, pr_created_at, pr_updated_at
+		) VALUES ($1, 1, 'samsara-dev', 'devbox-client', 3232, 'delegated PR',
+			'open', 'https://github.com/samsara-dev/devbox-client/pull/3232', $2, $3, now(), now())
+		RETURNING id
+	`, fx.Issue.WorkspaceID, checkoutRef, expectedHead).Scan(&pullRequestID); err != nil {
+		t.Fatalf("seed linked PR: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `INSERT INTO issue_pull_request (issue_id, pull_request_id) VALUES ($1, $2)`, issueID, pullRequestID); err != nil {
+		t.Fatalf("link PR: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM github_pull_request WHERE id = $1`, pullRequestID)
 	})
 
 	// Seed a running worker task for W (fx.OtherID) — the worker agent
@@ -96,6 +117,17 @@ func TestCreateComment_WorkerAgentCommentWakesSquadLeader_MUL4015(t *testing.T) 
 	}
 	if leaderTasks != 1 {
 		t.Fatalf("after worker comment: expected 1 queued leader task for L, got %d", leaderTasks)
+	}
+	var taskCheckoutRef, taskExpectedHead string
+	if err := testPool.QueryRow(ctx, `
+		SELECT context->>'checkout_ref', context->>'head_sha'
+		FROM agent_task_queue
+		WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued' AND is_leader_task = TRUE
+	`, issueID, fx.LeaderID).Scan(&taskCheckoutRef, &taskExpectedHead); err != nil {
+		t.Fatalf("load resumed leader repository context: %v", err)
+	}
+	if taskCheckoutRef != checkoutRef || taskExpectedHead != expectedHead {
+		t.Fatalf("resumed leader context = checkout %q, head %q; want %q and %q", taskCheckoutRef, taskExpectedHead, checkoutRef, expectedHead)
 	}
 }
 

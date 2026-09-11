@@ -404,10 +404,24 @@ func writeRepositories(b *strings.Builder, ctx TaskContextForEnv) {
 	b.WriteString("## Repositories\n\n")
 	b.WriteString("Available in this workspace — `multica repo checkout <url> [--ref <branch-or-sha>]` to fetch (creates a repository checkout on a dedicated branch).\n\n")
 	for _, repo := range ctx.Repos {
+		details := make([]string, 0, 2)
+		if repo.Ref != "" {
+			details = append(details, "checkout ref `"+repo.Ref+"`")
+		}
+		if repo.ExpectedHeadSHA != "" {
+			details = append(details, "expected head `"+repo.ExpectedHeadSHA+"`")
+		}
+		suffix := ""
+		if len(details) > 0 {
+			suffix = " (" + strings.Join(details, ", ") + ")"
+		}
 		if repo.Description != "" {
-			fmt.Fprintf(b, "- %s — %s\n", repo.URL, repo.Description)
+			fmt.Fprintf(b, "- %s%s — %s\n", repo.URL, suffix, repo.Description)
 		} else {
-			fmt.Fprintf(b, "- %s\n", repo.URL)
+			fmt.Fprintf(b, "- %s%s\n", repo.URL, suffix)
+		}
+		if repo.ExpectedHeadSHA != "" {
+			b.WriteString("  - For PR work, check out the branch ref and verify HEAD matches the expected SHA before editing and immediately before pushing. Stop if it changed.\n")
 		}
 	}
 	b.WriteString("\n")

@@ -2045,7 +2045,7 @@ func TestClaimTask_ProjectGithubReposOverrideWorkspaceRepos(t *testing.T) {
 // A task's exact review commit is dispatch-scoped and must win over the
 // project's default checkout ref. Sessions materializes resp.Repos directly;
 // returning the project ref here silently runs delegated work on stale code.
-func TestClaimTask_IssueReviewSHAOverridesProjectRepoDefaultRef(t *testing.T) {
+func TestClaimTask_IssueReviewBranchOverridesProjectRepoDefaultRef(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -2070,10 +2070,11 @@ func TestClaimTask_IssueReviewSHAOverridesProjectRepoDefaultRef(t *testing.T) {
 		"number":     88011,
 	})
 	const exactSHA = "0cfb91017f05177c352a562c9897d2ede4a67886"
+	const checkoutRef = "fix/pr-head-branch"
 	dbfx.Task(t, agentID, testutil.Cols{
 		"runtime_id": runtimeID,
 		"issue_id":   issueID,
-		"context":    `{"head_sha":"` + exactSHA + `"}`,
+		"context":    `{"repository":"example/exact-ref-repo","checkout_ref":"` + checkoutRef + `","head_sha":"` + exactSHA + `"}`,
 	})
 
 	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/claim", nil, testWorkspaceID, "test-claim-exact-ref")
@@ -2089,8 +2090,13 @@ func TestClaimTask_IssueReviewSHAOverridesProjectRepoDefaultRef(t *testing.T) {
 	if resp.Task == nil || len(resp.Task.Repos) != 1 {
 		t.Fatalf("task repos = %+v, want one project repository", resp.Task)
 	}
-	if got := resp.Task.Repos[0]; got.URL != repoURL || got.Ref != exactSHA {
-		t.Fatalf("task repo = %+v, want URL %q at exact issue ref %q", got, repoURL, exactSHA)
+	if got := resp.Task.Repos[0]; got.URL != repoURL || got.Ref != checkoutRef || got.ExpectedHeadSHA != exactSHA {
+		t.Fatalf("task repo = %+v, want URL %q at checkout ref %q guarded by %q", got, repoURL, checkoutRef, exactSHA)
+	}
+	var storedRef string
+	dbfx.QueryRow(t, `SELECT resource_ref->>'ref' FROM project_resource WHERE project_id = $1`, projectID).Scan(&storedRef)
+	if storedRef != "main" {
+		t.Fatalf("task override mutated project resource ref to %q", storedRef)
 	}
 }
 

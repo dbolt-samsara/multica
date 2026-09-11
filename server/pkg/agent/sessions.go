@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -21,7 +20,32 @@ type SessionsExecOptions struct {
 }
 type sessionsBackend struct{ cfg Config }
 
-var immutableSessionsRepository = regexp.MustCompile(`^[^/@\s]+/[^/@\s]+@(?:[0-9a-f]{40}|main)$`)
+func validSessionsRepository(repository string) bool {
+	name, ref, ok := strings.Cut(repository, "@")
+	if !ok || strings.Contains(ref, "@") || !validSessionsCheckoutRef(ref) {
+		return false
+	}
+	parts := strings.Split(name, "/")
+	return len(parts) == 2 && parts[0] != "" && parts[1] != "" && !strings.ContainsAny(name, "@ \t\r\n")
+}
+
+func validSessionsCheckoutRef(ref string) bool {
+	if ref == "" || ref == "@" || strings.HasPrefix(ref, "-") || strings.HasPrefix(ref, "/") || strings.HasSuffix(ref, "/") ||
+		strings.HasSuffix(ref, ".") || strings.Contains(ref, "//") || strings.Contains(ref, "..") || strings.Contains(ref, "@{") {
+		return false
+	}
+	for _, part := range strings.Split(ref, "/") {
+		if part == "" || strings.HasPrefix(part, ".") || strings.HasSuffix(part, ".lock") {
+			return false
+		}
+	}
+	for _, r := range ref {
+		if r < 0x20 || r == 0x7f || strings.ContainsRune(" ~^:?*[\\", r) {
+			return false
+		}
+	}
+	return true
+}
 
 // discoverSessionsModels asks the configured DevTools CLI for AgentGateway's
 // live model selectors. Selectors are intentionally preserved verbatim:
@@ -69,7 +93,7 @@ func parseSessionsModels(stdout []byte) []Model {
 
 func (b *sessionsBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
 	o := opts.Sessions
-	if o == nil || !immutableSessionsRepository.MatchString(o.Repository) || o.Thread == "" || o.MaxSpendUSD <= 0 || o.PersistSessionID == nil {
+	if o == nil || !validSessionsRepository(o.Repository) || o.Thread == "" || o.MaxSpendUSD <= 0 || o.PersistSessionID == nil {
 		return nil, fmt.Errorf("invalid Sessions options")
 	}
 	for _, s := range o.MCPScopes {

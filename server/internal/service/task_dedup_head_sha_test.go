@@ -124,10 +124,10 @@ func createHeadShaDedupFixture(t *testing.T, ctx context.Context, pool *pgxpool.
 		if err := pool.QueryRow(ctx, `
 			INSERT INTO github_pull_request (
 				workspace_id, installation_id, repo_owner, repo_name, pr_number,
-				title, state, html_url, pr_created_at, pr_updated_at, head_sha
+				title, state, html_url, branch, pr_created_at, pr_updated_at, head_sha
 			)
 			VALUES ($1, 1, 'multica-ai', 'multica', $2, 'review PR', $3,
-				'https://example.test/pr', now(), now(), $4)
+				'https://example.test/pr', 'fix/review-target', now(), now(), $4)
 			RETURNING id
 		`, workspaceID, 4000+int(suffix%1000), state, prHeadSha).Scan(&prID); err != nil {
 			t.Fatalf("create pull request: %v", err)
@@ -156,6 +156,18 @@ func createHeadShaDedupFixture(t *testing.T, ctx context.Context, pool *pgxpool.
 		agentID:   util.MustParseUUID(agentID),
 		runtimeID: util.MustParseUUID(runtimeID),
 		issueID:   util.MustParseUUID(issueID),
+	}
+}
+
+func TestResolveIssueReviewTargetSeparatesCheckoutBranchAndHeadGuard(t *testing.T) {
+	ctx := context.Background()
+	pool := newHeadShaDedupPool(t)
+	q := db.New(pool)
+	fx := createHeadShaDedupFixture(t, ctx, pool, shaA, "open")
+
+	target := NewTaskService(q, pool, nil, events.New()).resolveIssueReviewTarget(ctx, fx.issueID)
+	if target.repository.String != "multica-ai/multica" || target.checkoutRef.String != "fix/review-target" || target.headSHA.String != shaA {
+		t.Fatalf("review target = %+v, want repository, checkout branch, and head guard kept distinct", target)
 	}
 }
 

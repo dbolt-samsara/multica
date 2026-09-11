@@ -222,8 +222,8 @@ Owning code: `server/internal/daemon/config.go`, `agents_probe.go`, and the exis
 
 - Add the missing issue description to the claim and one typed in-memory Sessions intent to the daemon task/`agent.ExecOptions` boundary.
 - Build that intent once from the claimed task's existing project-narrowed repositories.
-- Accept only one losslessly normalized GitHub `owner/repository@<full-commit-sha>` on the approved GitHub host. Reject a missing/empty ref, branch name, multiple repositories, local path, SSH URL, or unsupported host. The prototype never resolves a drifting default branch implicitly.
-- The prototype prerequisite is one project GitHub resource already configured with a full commit SHA. Multica performs no branch/default-to-SHA resolution.
+- Accept one losslessly normalized GitHub `owner/repository@<ref>` on the approved GitHub host, where `<ref>` is an ordinary valid Git branch or a full commit SHA. Reject a missing or malformed ref, multiple repositories, local path, SSH URL, or unsupported host. The live Sessions schema represents repositories as strings; it has no separate client-provided `base` field.
+- Task-specific checkout intent wins over a Project resource default without mutating that resource. For PR work, keep the checkout branch and expected head SHA distinct: send `head.ref` as the repository ref and require `head.sha` verification before editing and immediately before pushing. Do not substitute `base.ref` for either value.
 - Do not pass Multica custom arguments, local MCP configuration, skills, connected apps, or local work directories to Sessions.
 
 ### Existing behavior reused unchanged

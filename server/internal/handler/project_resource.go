@@ -891,32 +891,60 @@ func (c claimProjectContext) applyTo(resp *AgentTaskResponse) {
 	resp.Repos = c.Repos
 }
 
-// applyTaskRepositoryRefOverride gives the exact commit captured when an issue
-// task was dispatched precedence over a mutable project/workspace default ref.
-// The task context is server-authored by the review-head enqueue path. Restrict
-// the override to one GitHub repository and a full SHA: with multiple repos the
-// context does not identify which repository owns the commit, so guessing would
-// be less safe than preserving the configured refs.
+// applyTaskRepositoryRefOverride gives the task-specific PR checkout branch
+// precedence over a mutable project/workspace default while retaining the
+// exact expected head separately as a write-safety guard. The task context is
+// server-authored by the review-target enqueue path. Restrict the override to
+// its named GitHub repository: with multiple repos, guessing would be less safe
+// than preserving the configured refs.
 func applyTaskRepositoryRefOverride(resp *AgentTaskResponse, taskContext []byte) {
 	if resp == nil || len(resp.Repos) != 1 {
 		return
 	}
 	var taskRef struct {
-		HeadSHA string `json:"head_sha"`
+		Repository  string `json:"repository"`
+		CheckoutRef string `json:"checkout_ref"`
+		HeadSHA     string `json:"head_sha"`
 	}
 	if json.Unmarshal(taskContext, &taskRef) != nil {
 		return
 	}
-	sha := strings.TrimSpace(taskRef.HeadSHA)
-	if len(sha) != 40 {
+	if repository := strings.TrimSpace(taskRef.Repository); repository != "" && repository != githubRepositoryName(resp.Repos[0].URL) {
 		return
+	}
+	sha := strings.TrimSpace(taskRef.HeadSHA)
+	if isFullGitSHA(sha) {
+		resp.Repos[0].ExpectedHeadSHA = sha
+	}
+	if checkoutRef := strings.TrimSpace(taskRef.CheckoutRef); checkoutRef != "" {
+		resp.Repos[0].Ref = checkoutRef
+		return
+	}
+	// Backward compatibility for tasks created before checkout_ref existed:
+	// DEV-36's exact head_sha override remains the safe checkout target.
+	if isFullGitSHA(sha) {
+		resp.Repos[0].Ref = sha
+	}
+}
+
+func githubRepositoryName(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || !strings.EqualFold(u.Host, "github.com") {
+		return ""
+	}
+	return strings.TrimSuffix(strings.Trim(strings.TrimSpace(u.Path), "/"), ".git")
+}
+
+func isFullGitSHA(sha string) bool {
+	if len(sha) != 40 {
+		return false
 	}
 	for _, r := range sha {
 		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
-			return
+			return false
 		}
 	}
-	resp.Repos[0].Ref = sha
+	return true
 }
 
 // resolveClaimProjectContext loads the project context for one daemon claim.

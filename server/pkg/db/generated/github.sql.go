@@ -266,6 +266,45 @@ func (q *Queries) GetIssueReviewHeadSha(ctx context.Context, issueID pgtype.UUID
 	return head_sha, err
 }
 
+const getIssueReviewTarget = `-- name: GetIssueReviewTarget :one
+SELECT head_sha, branch, repo_owner, repo_name FROM (
+    SELECT pr.head_sha, pr.branch, pr.repo_owner, pr.repo_name, pr.state, pr.pr_updated_at
+    FROM github_pull_request pr
+    JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
+    WHERE ipr.issue_id = $1 AND pr.head_sha <> '' AND NOT ipr.reference_only
+    UNION ALL
+    SELECT pr.head_sha, pr.branch, pr.repo_owner, pr.repo_name, pr.state, pr.pr_updated_at
+    FROM vcs_pull_request pr
+    JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
+    WHERE ipr.issue_id = $1 AND pr.head_sha <> '' AND NOT ipr.reference_only
+) combined
+ORDER BY (state IN ('open', 'draft')) DESC, pr_updated_at DESC
+LIMIT 1
+`
+
+type GetIssueReviewTargetRow struct {
+	HeadSha   string      `json:"head_sha"`
+	Branch    pgtype.Text `json:"branch"`
+	RepoOwner string      `json:"repo_owner"`
+	RepoName  string      `json:"repo_name"`
+}
+
+// Returns the distinct PR checkout branch and expected head commit for the
+// same working PR selected by GetIssueReviewHeadSha. A branch is checkout
+// intent; the SHA is the write-safety guard. Do not collapse them into one
+// value merely because older task context used head_sha for both purposes.
+func (q *Queries) GetIssueReviewTarget(ctx context.Context, issueID pgtype.UUID) (GetIssueReviewTargetRow, error) {
+	row := q.db.QueryRow(ctx, getIssueReviewTarget, issueID)
+	var i GetIssueReviewTargetRow
+	err := row.Scan(
+		&i.HeadSha,
+		&i.Branch,
+		&i.RepoOwner,
+		&i.RepoName,
+	)
+	return i, err
+}
+
 const getPendingGitHubInstallation = `-- name: GetPendingGitHubInstallation :one
 SELECT installation_id, account_login, account_type, account_avatar_url, received_at, updated_at FROM github_pending_installation WHERE installation_id = $1
 `
