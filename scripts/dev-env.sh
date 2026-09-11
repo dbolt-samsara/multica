@@ -42,6 +42,19 @@ WORKSPACE_SLUG="${MULTICA_DEV_WORKSPACE_SLUG:-dev}"
 ALL_COMPONENTS="api web daemon desktop"
 DEFAULT_COMPONENTS="api web"
 
+# Use Corepack when it is available so every local lifecycle command honors
+# the pnpm version declared in package.json. A bare pnpm may be absent, or may
+# be a different major version that cannot safely reuse node_modules.
+run_pnpm() {
+  local corepack_bin
+  corepack_bin="$(command -v corepack 2>/dev/null || true)"
+  if [ -n "$corepack_bin" ]; then
+    PATH="$REPO_ROOT/scripts:$PATH" COREPACK_BIN="$corepack_bin" "$corepack_bin" pnpm "$@"
+  else
+    pnpm "$@"
+  fi
+}
+
 # An agent runs with TMPDIR=/tmp/multica-task-<id>, deleted when the run ends.
 # Anything the Go toolchain builds there goes with it, so a binary started from
 # such a build stops being re-executable the moment its creator finishes.
@@ -1132,7 +1145,11 @@ cmd_up() {
   local missing=() tool needed="node go curl"
   # pnpm is only required by the components that actually build JavaScript, so
   # `up C=api` works on a checkout that has never run an install.
-  if component_selected web || component_selected desktop; then needed="$needed pnpm"; fi
+  if component_selected web || component_selected desktop; then
+    if ! command -v pnpm >/dev/null 2>&1 && ! command -v corepack >/dev/null 2>&1; then
+      missing+=(pnpm)
+    fi
+  fi
   for tool in $needed; do
     command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
   done
@@ -1239,7 +1256,7 @@ Start the rest with 'make up C=api,web', or run 'make up C=daemon' from your own
 
   if [ ! -d "$REPO_ROOT/node_modules" ] && { component_selected web || component_selected desktop; }; then
     step "Dependencies"
-    (cd "$REPO_ROOT" && pnpm install) || die "pnpm install failed."
+    (cd "$REPO_ROOT" && run_pnpm install) || die "pnpm install failed."
   fi
 
   step "Database"

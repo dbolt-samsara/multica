@@ -152,6 +152,9 @@ func (b *piBackend) applyBuiltinRuntimeOverrides(desc BuiltinRuntime) {
 // thing: New() is family-only, NewRuntime() is runtime-identity-only, and
 // the daemon never has to know which is which.
 func ResolveBackend(provider string, cfg Config) (Backend, error) {
+	if provider == "sessions" {
+		return &sessionsBackend{cfg: cfg}, nil
+	}
 	if IsBuiltinRuntime(provider) {
 		return NewRuntime(provider, cfg)
 	}

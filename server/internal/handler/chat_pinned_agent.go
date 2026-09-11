@@ -63,6 +63,16 @@ func (h *Handler) ListChatPinnedAgents(w http.ResponseWriter, r *http.Request) {
 		if _, ok := allowed[agentID]; !ok {
 			continue
 		}
+		agent, err := h.Queries.GetAgent(r.Context(), row.AgentID)
+		if err != nil {
+			continue
+		}
+		if sessions, err := h.isSessionsAgent(r.Context(), agent); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load agent runtime")
+			return
+		} else if sessions {
+			continue
+		}
 		resp = append(resp, ChatPinnedAgentResponse{AgentID: agentID, Position: row.Position})
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -95,6 +105,20 @@ func (h *Handler) PinChatAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, ok := allowed[req.AgentID]; !ok {
 		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	agent, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
+		ID: agentUUID, WorkspaceID: parseUUID(workspaceID),
+	})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	if sessions, err := h.isSessionsAgent(r.Context(), agent); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load agent runtime")
+		return
+	} else if sessions {
+		writeError(w, http.StatusBadRequest, "Sessions agents accept issue work only")
 		return
 	}
 

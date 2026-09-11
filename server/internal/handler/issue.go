@@ -2617,6 +2617,13 @@ func (h *Handler) QuickCreateIssue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "agent not found")
 		return
 	}
+	if sessions, err := h.isSessionsAgent(r.Context(), agent); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load agent runtime")
+		return
+	} else if sessions {
+		writeError(w, http.StatusBadRequest, "Sessions agents accept directly assigned issue work only")
+		return
+	}
 	// Quick-create needs the agent to run NOW, so any non-ready verdict refuses
 	// — but with the verdict's own code, so "CLI cannot run" no longer arrives
 	// as "runtime is offline" and sends the user to reconnect a machine that is
@@ -3774,6 +3781,11 @@ func (h *Handler) validateAssigneePair(ctx context.Context, r *http.Request, wor
 			return http.StatusBadRequest, "cannot assign to archived agent"
 		}
 		actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
+		if sessions, err := h.isSessionsAgent(ctx, agent); err != nil {
+			return http.StatusInternalServerError, "failed to load agent runtime"
+		} else if sessions && (agent.PermissionMode != "private" || actorType != "member" || uuidToString(agent.OwnerID) != actorID) {
+			return http.StatusForbidden, "Sessions agents accept issue work only from their owner"
+		}
 		effectiveInvoker := h.invokeOriginatorFromRequest(r, actorType, actorID)
 		if !h.canInvokeAgent(ctx, agent, actorType, actorID, effectiveInvoker, workspaceID) {
 			// Names the missing permission, not the target's configuration: the
@@ -3801,6 +3813,11 @@ func (h *Handler) validateAssigneePair(ctx context.Context, r *http.Request, wor
 		leader, err := h.Queries.GetAgent(ctx, squad.LeaderID)
 		if err != nil || leader.ArchivedAt.Valid {
 			return http.StatusBadRequest, "squad leader is archived; cannot assign to this squad"
+		}
+		if sessions, err := h.isSessionsAgent(ctx, leader); err != nil {
+			return http.StatusInternalServerError, "failed to load squad leader runtime"
+		} else if sessions {
+			return http.StatusBadRequest, "Sessions agents cannot run squad work"
 		}
 		actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
 		effectiveInvoker := h.invokeOriginatorFromRequest(r, actorType, actorID)

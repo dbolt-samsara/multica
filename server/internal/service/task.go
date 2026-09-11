@@ -90,6 +90,43 @@ type TaskService struct {
 	analyticsContextOrder []string
 }
 
+// ErrSessionsInvocationNotAllowed rejects a queue entry before a hidden
+// Sessions backend could ever receive it. Sessions are deliberately narrower
+// than ordinary agent runtimes: their only supported input is a private
+// agent owner's direct claim of an existing issue.
+var ErrSessionsInvocationNotAllowed = errors.New("Sessions agents accept only directly claimed private owner issue work")
+
+func (s *TaskService) isSessionsAgent(ctx context.Context, agent db.Agent) (bool, error) {
+	if !agent.RuntimeID.Valid {
+		return false, nil
+	}
+	runtime, err := s.Queries.GetAgentRuntime(ctx, agent.RuntimeID)
+	if err != nil {
+		return false, fmt.Errorf("load agent runtime: %w", err)
+	}
+	return runtime.Provider == "sessions", nil
+}
+
+// validateSessionsIssueInvocation keeps the Sessions boundary at the durable
+// task queue. HTTP admission is friendlier, but every enqueue route must also
+// fail closed here: autopilot, squads, handoffs, and delegated agent work all
+// eventually create a task through one of these shared paths.
+func (s *TaskService) validateSessionsIssueInvocation(ctx context.Context, agent db.Agent, issue db.Issue, attr attribution.Result, isLeader bool, handoffNote string) error {
+	sessions, err := s.isSessionsAgent(ctx, agent)
+	if err != nil {
+		return err
+	}
+	if !sessions {
+		return nil
+	}
+	if agent.PermissionMode != "private" || attr.Source != attribution.SourceDirectHuman ||
+		!attr.UserID.Valid || util.UUIDToString(attr.UserID) != util.UUIDToString(agent.OwnerID) ||
+		isLeader || handoffNote != "" || issue.OriginType.Valid {
+		return ErrSessionsInvocationNotAllowed
+	}
+	return nil
+}
+
 type SourceContextObjectStore interface {
 	DeleteObject(ctx context.Context, key string) error
 	KeyFromURL(rawURL string) string
@@ -1264,6 +1301,9 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		slog.Warn("task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(issue.AssigneeID))
 		return db.AgentTaskQueue{}, err
 	}
+	if err := s.validateSessionsIssueInvocation(ctx, agent, issue, attr, false, handoffNote); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
@@ -1421,6 +1461,9 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 		slog.Warn("mention task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 		return db.AgentTaskQueue{}, err
 	}
+	if err := s.validateSessionsIssueInvocation(ctx, agent, issue, attr, isLeader, handoffNote); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
@@ -1553,6 +1596,11 @@ func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, r
 	}
 	if !agent.RuntimeID.Valid {
 		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
+	}
+	if sessions, err := s.isSessionsAgent(ctx, agent); err != nil {
+		return db.AgentTaskQueue{}, err
+	} else if sessions {
+		return db.AgentTaskQueue{}, ErrSessionsInvocationNotAllowed
 	}
 
 	payload := QuickCreateContext{
@@ -2872,6 +2920,11 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 				return err
 			}
 			task = cancelled
+			// This is a same-transaction marker: a Sessions cancellation is not
+			// proof that the remote worker stopped until the daemon readback ack.
+			if err := qtx.MarkSessionsRemoteCleanupUnknown(ctx, task.ID); err != nil {
+				return fmt.Errorf("mark Sessions remote cleanup unknown: %w", err)
+			}
 			// CancelAgentTaskByUser appends the recovery receipt in the same
 			// statement, so the returned row already carries it.
 			if err := SettleDeliveredDelegatedFailureRecoveries(ctx, qtx, cancelled); err != nil {
@@ -4660,7 +4713,7 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 		if parent, perr := s.Queries.GetAgentTask(ctx, taskID); perr != nil {
 			slog.Warn("fail task auto-retry: load parent failed",
 				"task_id", util.UUIDToString(taskID), "error", perr)
-		} else if retryEligible(failureReason, parent) {
+		} else if retryEligible(failureReason, parent) && s.runtimeAllowsAutoRetry(ctx, parent) {
 			wantRetry = true
 			// Persist the reason-aware effective budget into the child so the
 			// retry chain self-describes (e.g. provider_network → max_attempts=3),
@@ -5158,6 +5211,17 @@ func retryEligible(failureReason string, t db.AgentTaskQueue) bool {
 		(t.IssueID.Valid || t.ChatSessionID.Valid || isSourceContextQuickCreateTask(t))
 }
 
+func (s *TaskService) runtimeAllowsAutoRetry(ctx context.Context, t db.AgentTaskQueue) bool {
+	// A Sessions run may still be spending remotely after any daemon-shaped
+	// failure. Never create a new task until an operator reconciles it.
+	runtime, err := s.Queries.GetAgentRuntime(ctx, t.RuntimeID)
+	if err != nil {
+		slog.Warn("task auto-retry skipped: runtime could not be resolved", "task_id", util.UUIDToString(t.ID), "error", err)
+		return false
+	}
+	return runtime.Provider != "sessions"
+}
+
 func isSourceContextQuickCreateTask(task db.AgentTaskQueue) bool {
 	if len(task.Context) == 0 || task.IssueID.Valid || task.ChatSessionID.Valid || task.AutopilotRunID.Valid {
 		return false
@@ -5232,7 +5296,7 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	// Autopilot has its own retry semantics (don't double-trigger) and a task
 	// with no issue/chat link has nowhere to report its retry — retryEligible
 	// covers both, keeping this sweeper path in sync with FailTask's in-tx retry.
-	if !retryEligible(reason, parent) {
+	if !retryEligible(reason, parent) || !s.runtimeAllowsAutoRetry(ctx, parent) {
 		return nil, nil
 	}
 

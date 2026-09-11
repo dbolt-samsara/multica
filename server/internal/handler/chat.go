@@ -27,6 +27,35 @@ import (
 // meaningful summary, short enough to keep the dropdown row scannable.
 const chatSessionTitleMaxLen = 200
 
+// sessionsAgentForbidsChat preserves the product split: Controller Chat stays
+// on its configured Agent Gateway path, while a Sessions worker is issue-only.
+// This is an identity/runtime decision, never prompt-text routing or fallback.
+func (h *Handler) isSessionsAgent(ctx context.Context, agent db.Agent) (bool, error) {
+	if !agent.RuntimeID.Valid {
+		return false, nil
+	}
+	runtime, err := h.Queries.GetAgentRuntime(ctx, agent.RuntimeID)
+	if err != nil {
+		return false, err
+	}
+	return runtime.Provider == "sessions", nil
+}
+
+func (h *Handler) sessionsAgentForbidsChat(ctx context.Context, agent db.Agent) (bool, error) {
+	return h.isSessionsAgent(ctx, agent)
+}
+
+// chatAgentCanAppear keeps an already-created Sessions chat from becoming a
+// picker/list back door after the runtime is marked issue-only.
+func (h *Handler) chatAgentCanAppear(ctx context.Context, agentID pgtype.UUID) (bool, error) {
+	agent, err := h.Queries.GetAgent(ctx, agentID)
+	if err != nil {
+		return false, err
+	}
+	sessions, err := h.isSessionsAgent(ctx, agent)
+	return !sessions, err
+}
+
 // ---------------------------------------------------------------------------
 // Chat Sessions
 // ---------------------------------------------------------------------------
@@ -80,6 +109,13 @@ func (h *Handler) CreateChatSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if agent.ArchivedAt.Valid {
 		writeError(w, http.StatusBadRequest, "agent is archived")
+		return
+	}
+	if sessions, err := h.sessionsAgentForbidsChat(r.Context(), agent); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load agent runtime")
+		return
+	} else if sessions {
+		writeError(w, http.StatusBadRequest, "Sessions agents accept issue work only")
 		return
 	}
 	// Invocation gate: starting a chat produces agent runs, so it uses the
@@ -195,6 +231,14 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 			if _, ok := allowed[uuidToString(s.AgentID)]; !ok {
 				continue
 			}
+			visible, err := h.chatAgentCanAppear(r.Context(), s.AgentID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to load agent runtime")
+				return
+			}
+			if !visible {
+				continue
+			}
 			resp = append(resp, ChatSessionResponse{
 				ID:          uuidToString(s.ID),
 				WorkspaceID: uuidToString(s.WorkspaceID),
@@ -223,6 +267,14 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 		resp = make([]ChatSessionResponse, 0, len(rows))
 		for _, s := range rows {
 			if _, ok := allowed[uuidToString(s.AgentID)]; !ok {
+				continue
+			}
+			visible, err := h.chatAgentCanAppear(r.Context(), s.AgentID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to load agent runtime")
+				return
+			}
+			if !visible {
 				continue
 			}
 			resp = append(resp, ChatSessionResponse{
@@ -886,6 +938,13 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	if agent.ArchivedAt.Valid {
 		writeError(w, http.StatusConflict, "chat agent is archived")
+		return
+	}
+	if sessions, err := h.sessionsAgentForbidsChat(r.Context(), agent); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load agent runtime")
+		return
+	} else if sessions {
+		writeError(w, http.StatusBadRequest, "Sessions agents accept issue work only")
 		return
 	}
 	// Shared verdict: an unbound agent and a machine whose CLI cannot run are

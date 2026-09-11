@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev
+.PHONY: help makehelp dev server daemon cli multica build-sessions-devtools build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev
 
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
@@ -29,6 +29,20 @@ LOCAL_UPLOAD_BASE_URL ?= http://localhost:$(PORT)
 export
 
 MULTICA_ARGS ?= $(ARGS)
+COREPACK ?= $(shell command -v corepack)
+# Keep the Corepack shim first when Turborepo starts package scripts. Those
+# nested scripts invoke `pnpm` by name, so invoking `corepack pnpm` only at the
+# top level is not enough when another pnpm is earlier in the inherited PATH.
+PNPM ?= PATH="$(CURDIR)/scripts:$$PATH" COREPACK_BIN="$(COREPACK)" "$(COREPACK)" pnpm
+# `make up` starts component targets through a child make. Do not export the
+# recursive command: an exported `$$PATH` is parsed again by that child and
+# can turn the inherited PATH into a literal, incomplete value.
+unexport PNPM COREPACK
+
+# Local-only builder for the DevTools Sessions CLI used by this integration.
+# Override the source path when the vetted DevBox Client worktree moves.
+SESSIONS_DEVTOOLS_SOURCE ?= $(HOME)/.codex/worktrees/devbox-client-multica-e2e-cli
+SESSIONS_DEVTOOLS_BIN ?= /tmp/multica-devtools
 
 COMPOSE := docker compose
 
@@ -75,6 +89,21 @@ help: ## Show available make targets and common local workflows
 		/^[a-zA-Z0-9_.-]+:.*## / {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 makehelp: help ## Alias for `make help`
+
+# ---------- Local Sessions integration ----------
+##@ Local Sessions integration
+
+build-sessions-devtools: ## Build the vetted local DevTools Sessions CLI at /tmp/multica-devtools
+	@test -f "$(SESSIONS_DEVTOOLS_SOURCE)/devtools/cmd/devtools/main.go" || { \
+		echo "DevTools source is missing: $(SESSIONS_DEVTOOLS_SOURCE)"; \
+		echo "Set SESSIONS_DEVTOOLS_SOURCE to the vetted DevBox Client worktree."; \
+		exit 1; \
+	}
+	@echo "==> Building DevTools Sessions CLI from $(SESSIONS_DEVTOOLS_SOURCE)..."
+	@cd "$(SESSIONS_DEVTOOLS_SOURCE)" && go build -o "$(SESSIONS_DEVTOOLS_BIN)" ./devtools/cmd/devtools
+	@"$(SESSIONS_DEVTOOLS_BIN)" session dispatch --help | grep -q -- '--max-spend-usd' || { echo "Built CLI lacks --max-spend-usd"; exit 1; }
+	@"$(SESSIONS_DEVTOOLS_BIN)" session dispatch --help | grep -q -- '--mcp-scope' || { echo "Built CLI lacks --mcp-scope"; exit 1; }
+	@echo "==> Built $(SESSIONS_DEVTOOLS_BIN)"
 
 # ---------- Self-hosting (Docker Compose) ----------
 ##@ Self-hosting
@@ -184,10 +213,10 @@ api-dev: ## Run only the Go backend for the current env file
 	cd server && go run -ldflags "-X main.commit=$(COMMIT)" ./cmd/server
 
 web-dev: ## Run only the Next.js dev server for the current env file
-	pnpm dev:web
+	$(PNPM) dev:web
 
 desktop-dev: ## Run only the Electron desktop app for the current env file
-	pnpm dev:desktop
+	$(PNPM) dev:desktop
 
 # ---------- One-click commands ----------
 ##@ One-click

@@ -2063,10 +2063,12 @@ func TestClaimTask_ProjectDescriptionInjected(t *testing.T) {
 		testWorkspaceID,
 	).Scan(&agentID, &runtimeID)
 
+	const issueDescription = "Fix the pinned integration boundary."
 	issueID := dbfx.Issue(t, "project description", testutil.Cols{
-		"project_id": projectID,
-		"priority":   "medium",
-		"number":     88002,
+		"project_id":  projectID,
+		"description": issueDescription,
+		"priority":    "medium",
+		"number":      88002,
 	})
 
 	dbfx.Task(t, agentID, testutil.Cols{
@@ -2082,6 +2084,7 @@ func TestClaimTask_ProjectDescriptionInjected(t *testing.T) {
 		Task *struct {
 			ProjectID          string `json:"project_id"`
 			ProjectDescription string `json:"project_description"`
+			IssueDescription   string `json:"issue_description"`
 		} `json:"task"`
 	}
 	w.JSON(&resp)
@@ -2093,6 +2096,9 @@ func TestClaimTask_ProjectDescriptionInjected(t *testing.T) {
 	}
 	if resp.Task.ProjectDescription != projectDescription {
 		t.Errorf("project_description = %q, want %q", resp.Task.ProjectDescription, projectDescription)
+	}
+	if resp.Task.IssueDescription != issueDescription {
+		t.Errorf("issue_description = %q, want %q", resp.Task.IssueDescription, issueDescription)
 	}
 }
 
@@ -4463,5 +4469,69 @@ func TestBatchIssueGCCheckReadsNoCatalogForBuiltInStatuses(t *testing.T) {
 	if counter.entryReads != 0 || counter.keyReads != 0 {
 		t.Fatalf("built-in batch read the catalog (%d entry, %d key), want 0 — a built-in key IS its own category",
 			counter.entryReads, counter.keyReads)
+	}
+}
+
+func TestAckTaskCancelled_ConfirmsOnlyCancelledSessionsTasks(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	var agentID, ordinaryRuntimeID string
+	dbfx.QueryRow(t, `SELECT a.id, a.runtime_id FROM agent a WHERE a.workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&agentID, &ordinaryRuntimeID)
+	sessionsRuntimeID := createProviderRuntime(t, "sessions")
+	cleanupTask := func(id string) {
+		t.Cleanup(func() { _, _ = testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, id) })
+	}
+
+	sessionsTaskID := dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id": sessionsRuntimeID, "status": "cancelled", "started_at": testutil.Raw("now()"), "completed_at": testutil.Raw("now()"),
+		"context": []byte(`{"sessions_remote_cleanup":{"status":"unknown","remote_session_id":"sess-pinned"}}`),
+	})
+	cleanupTask(sessionsTaskID)
+	ack := func(taskID string, body map[string]any) {
+		req := newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/cancel-ack", body, testWorkspaceID, "legit-daemon")
+		req = withURLParam(req, "taskId", taskID)
+		testutil.Call(t, testHandler.AckTaskCancelled, req).Want(http.StatusOK)
+	}
+	// A restart can lose the daemon's in-memory id, but the cancellation
+	// transaction already recorded it. Confirmation must merge, not replace.
+	ack(sessionsTaskID, map[string]any{"remote_cleanup_status": "confirmed"})
+	var cleanupJSON []byte
+	if err := testPool.QueryRow(ctx, `SELECT context->'sessions_remote_cleanup' FROM agent_task_queue WHERE id = $1`, sessionsTaskID).Scan(&cleanupJSON); err != nil {
+		t.Fatal(err)
+	}
+	var cleanup map[string]string
+	if err := json.Unmarshal(cleanupJSON, &cleanup); err != nil {
+		t.Fatal(err)
+	}
+	if cleanup["status"] != "confirmed" || cleanup["remote_session_id"] != "sess-pinned" {
+		t.Fatalf("cleanup = %#v, want confirmed sess-pinned", cleanup)
+	}
+
+	ordinaryTaskID := dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id": ordinaryRuntimeID, "status": "cancelled", "started_at": testutil.Raw("now()"), "completed_at": testutil.Raw("now()"), "context": []byte(`{"sentinel":"keep"}`),
+	})
+	cleanupTask(ordinaryTaskID)
+	ack(ordinaryTaskID, map[string]any{"remote_cleanup_status": "confirmed", "remote_session_id": "sess-forged"})
+	var ordinaryContext []byte
+	if err := testPool.QueryRow(ctx, `SELECT context FROM agent_task_queue WHERE id = $1`, ordinaryTaskID).Scan(&ordinaryContext); err != nil {
+		t.Fatal(err)
+	}
+	if string(ordinaryContext) != `{"sentinel": "keep"}` && string(ordinaryContext) != `{"sentinel":"keep"}` {
+		t.Fatalf("non-Sessions ack changed context: %s", ordinaryContext)
+	}
+
+	completedSessionsTaskID := dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id": sessionsRuntimeID, "status": "completed", "started_at": testutil.Raw("now()"), "completed_at": testutil.Raw("now()"), "context": []byte(`{"sentinel":"keep"}`),
+	})
+	cleanupTask(completedSessionsTaskID)
+	ack(completedSessionsTaskID, map[string]any{"remote_cleanup_status": "confirmed", "remote_session_id": "sess-forged"})
+	var completedContext []byte
+	if err := testPool.QueryRow(ctx, `SELECT context FROM agent_task_queue WHERE id = $1`, completedSessionsTaskID).Scan(&completedContext); err != nil {
+		t.Fatal(err)
+	}
+	if string(completedContext) != `{"sentinel": "keep"}` && string(completedContext) != `{"sentinel":"keep"}` {
+		t.Fatalf("non-cancelled ack changed context: %s", completedContext)
 	}
 }

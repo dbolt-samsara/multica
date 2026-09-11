@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,6 +73,23 @@ func cachedShellResolvedAgents() map[string]string {
 	shellResolveKey = key
 	shellResolvedAt = time.Now()
 	return shellResolveCache
+}
+
+// probeSessionsExecutable resolves only the explicit Sessions feature switch.
+// It deliberately does not consult PATH or a login shell: enabling a remote
+// execution backend must be an operator's explicit, absolute executable choice.
+// Registration and its read-only auth preflight remain separate, so this helper
+// is safe to prepare while the runtime itself is still unregistered.
+func probeSessionsExecutable() (AgentEntry, bool) {
+	configured := strings.TrimSpace(os.Getenv("MULTICA_SESSIONS_PATH"))
+	if configured == "" || !filepath.IsAbs(configured) {
+		return AgentEntry{}, false
+	}
+	path, err := resolveAgentExecutablePath(configured)
+	if err != nil {
+		return AgentEntry{}, false
+	}
+	return AgentEntry{Path: path, Command: configured}, true
 }
 
 // probeAgentCLIs discovers which built-in agent CLIs are installed on this
@@ -153,6 +171,12 @@ var probeAgentCLIs = func() map[string]AgentEntry {
 	}
 
 	agents := map[string]AgentEntry{}
+	// Sessions is intentionally opt-in: unlike ordinary local CLIs it never
+	// probes PATH or a login shell. The later registration round runs its
+	// read-only auth/list preflight before advertising the runtime.
+	if entry, ok := probeSessionsExecutable(); ok {
+		agents["sessions"] = entry
+	}
 	if e, ok := probe("MULTICA_CLAUDE_PATH", "claude", "MULTICA_CLAUDE_MODEL"); ok {
 		agents["claude"] = e
 	}
@@ -327,4 +351,21 @@ func probeDshMulticaProfile(executablePath string) bool {
 		}
 	}
 	return false
+}
+
+// preflightSessionsExecutable verifies the two read-only CLI capabilities that
+// make an explicitly configured Sessions executable eligible for registration.
+// It must be called by the eventual registration gate, never by discovery: a
+// probe must not turn a PATH scan into authentication or network traffic.
+func preflightSessionsExecutable(ctx context.Context, entry AgentEntry) error {
+	if entry.Path == "" || !filepath.IsAbs(entry.Path) {
+		return fmt.Errorf("Sessions executable path must be absolute")
+	}
+	for _, args := range [][]string{{"auth", "status"}, {"session", "list", "--json", "--limit", "1"}} {
+		cmd := exec.CommandContext(ctx, entry.Path, args...)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("Sessions preflight %q failed: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+		}
+	}
+	return nil
 }

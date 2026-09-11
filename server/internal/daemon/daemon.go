@@ -2485,6 +2485,15 @@ func (d *Daemon) detectBuiltinRuntimes(ctx context.Context) ([]map[string]string
 	for name, entry := range d.agents() {
 		name, entry := name, entry
 		g.Go(func() error {
+			if name == "sessions" {
+				if err := preflightSessionsExecutable(ctx, entry); err != nil {
+					mu.Lock()
+					skipped[name] = err.Error()
+					unavailable[name] = err.Error()
+					mu.Unlock()
+					return nil
+				}
+			}
 			version, reason, verdict := d.probeBuiltinRuntime(ctx, name, entry)
 			if verdict != builtinProbeOK {
 				// A not-executable verdict is deterministic, but the file can be
@@ -5518,7 +5527,7 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		// run errors stay discarded: on a cancelled run they are expected
 		// noise (context canceled, killed process), and persisting them would
 		// stamp a bogus reason on every ordinary mid-run cancel.
-		ack := TaskCancelAck{BranchName: result.BranchName, DurableWorkDir: result.DurableWorkDir}
+		ack := TaskCancelAck{BranchName: result.BranchName, DurableWorkDir: result.DurableWorkDir, RemoteSessionID: result.SessionID, RemoteCleanupStatus: result.RemoteCleanupStatus}
 		var preserved *worktreePreservedError
 		if errors.As(err, &preserved) {
 			ack.ErrorMessage = preserved.Error()
@@ -6086,6 +6095,9 @@ func init() {
 
 // providerDisplayName returns the human-facing runtime name for a provider key.
 func providerDisplayName(name string) string {
+	if name == "sessions" {
+		return "DevTools Sessions"
+	}
 	if name == "" {
 		return name
 	}
@@ -7264,6 +7276,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// multiple workspaces share a host.
 	if task.WorkspaceID == "" {
 		return TaskResult{}, fmt.Errorf("refusing to spawn agent: task has no workspace_id (task_id=%s)", task.ID)
+	}
+
+	// Sessions is an intentionally remote, issue-only backend. It must never
+	// enter the local provider preparation pipeline below.
+	if provider == "sessions" {
+		return d.runSessionsTask(ctx, task, taskLog)
 	}
 
 	prepareTimeout := d.effectiveTaskPrepareTimeout()
