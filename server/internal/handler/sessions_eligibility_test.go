@@ -67,6 +67,47 @@ func TestSessionsEligibilityGates(t *testing.T) {
 		t.Fatalf("Sessions handoff error = %v, want ErrSessionsInvocationNotAllowed", err)
 	}
 
+	// A Sessions worker may opt in to controller delegation by using public_to.
+	// The delegator must be a live task of another agent owned by the same human,
+	// and the queued child must preserve that task as provenance.
+	delegatedWorkerID := dbfx.Agent(t, "sessions delegated worker", runtimeID, testutil.Cols{
+		"owner_id":        testUserID,
+		"permission_mode": "public_to",
+	})
+	controllerID := dbfx.Agent(t, "sessions same-owner controller", handlerTestRuntimeID(t), testutil.Cols{
+		"owner_id":        testUserID,
+		"permission_mode": "private",
+	})
+	controllerTaskID := dbfx.Task(t, controllerID, testutil.Cols{
+		"runtime_id":          handlerTestRuntimeID(t),
+		"status":              "running",
+		"started_at":          testutil.Raw("now()"),
+		"originator_user_id":  testUserID,
+		"accountable_user_id": testUserID,
+	})
+	delegatedReq := asRun(newRequest(http.MethodPost, "/api/issues?workspace_id="+testWorkspaceID, nil), controllerID, controllerTaskID)
+	if status, _ := testHandler.validateAssigneePair(ctx, delegatedReq, testWorkspaceID, pgtype.Text{String: "agent", Valid: true}, agentUUID); status != http.StatusForbidden {
+		t.Fatalf("private Sessions worker delegated admission = %d, want %d", status, http.StatusForbidden)
+	}
+	if status, message := testHandler.validateAssigneePair(ctx, delegatedReq, testWorkspaceID, pgtype.Text{String: "agent", Valid: true}, parseUUID(delegatedWorkerID)); status != 0 {
+		t.Fatalf("same-owner controller issue admission = (%d, %q), want success", status, message)
+	}
+	delegatedIssueID := dbfx.Issue(t, "Sessions delegated issue", testutil.Cols{
+		"assignee_type": "agent", "assignee_id": delegatedWorkerID,
+		"creator_type": "member", "creator_id": testUserID,
+	})
+	delegatedIssue, err := testHandler.Queries.GetIssue(ctx, parseUUID(delegatedIssueID))
+	if err != nil {
+		t.Fatalf("load delegated issue: %v", err)
+	}
+	delegatedTask, err := testHandler.TaskService.EnqueueTaskForIssueDelegated(ctx, delegatedIssue, parseUUID(controllerTaskID))
+	if err != nil {
+		t.Fatalf("same-owner delegated Sessions task: %v", err)
+	}
+	if delegatedTask.DelegatedFromTaskID != parseUUID(controllerTaskID) {
+		t.Fatalf("delegated_from_task_id = %s, want %s", delegatedTask.DelegatedFromTaskID.Bytes, controllerTaskID)
+	}
+
 	testutil.Call(t, testHandler.PinChatAgent,
 		withChatTestWorkspaceCtx(t, newRequest(http.MethodPost, "/api/chat/pinned-agents", map[string]any{"agent_id": agentID})),
 	).Want(http.StatusBadRequest)
