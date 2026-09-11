@@ -6,6 +6,7 @@ codex
 copilot
 cursor-agent
 deveco
+devtools
 dim
 dsh
 grok
