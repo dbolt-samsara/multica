@@ -2776,7 +2776,7 @@ SET context = jsonb_set(
   COALESCE(task.context->'sessions_remote_cleanup', '{}'::jsonb)
     || jsonb_strip_nulls(jsonb_build_object(
       'status', 'confirmed',
-      'remote_session_id', sqlc.narg('remote_session_id')
+      'remote_session_id', sqlc.narg('remote_session_id')::text
     )),
   true
 )

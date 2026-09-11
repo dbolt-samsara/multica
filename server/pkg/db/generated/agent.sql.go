@@ -1953,7 +1953,7 @@ SET context = jsonb_set(
   COALESCE(task.context->'sessions_remote_cleanup', '{}'::jsonb)
     || jsonb_strip_nulls(jsonb_build_object(
       'status', 'confirmed',
-      'remote_session_id', $1
+      'remote_session_id', $1::text
     )),
   true
 )
@@ -1961,7 +1961,7 @@ WHERE task.id = $2 AND task.status = 'cancelled' AND EXISTS (SELECT 1 FROM agent
 `
 
 type ConfirmSessionsRemoteCleanupParams struct {
-	RemoteSessionID interface{} `json:"remote_session_id"`
+	RemoteSessionID pgtype.Text `json:"remote_session_id"`
 	ID              pgtype.UUID `json:"id"`
 }
 

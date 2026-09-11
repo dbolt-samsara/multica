@@ -4480,12 +4480,16 @@ func TestAckTaskCancelled_ConfirmsOnlyCancelledSessionsTasks(t *testing.T) {
 	var agentID, ordinaryRuntimeID string
 	dbfx.QueryRow(t, `SELECT a.id, a.runtime_id FROM agent a WHERE a.workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&agentID, &ordinaryRuntimeID)
 	sessionsRuntimeID := createProviderRuntime(t, "sessions")
+	// Task workspace resolution is derived from its issue (or chat session).
+	// These daemon acks model an issue task, so give every fixture task a
+	// workspace-bearing issue rather than creating an otherwise orphaned row.
+	issueID := dbfx.Issue(t, "sessions cancel ack", testutil.Cols{"number": 92621})
 	cleanupTask := func(id string) {
 		t.Cleanup(func() { _, _ = testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, id) })
 	}
 
 	sessionsTaskID := dbfx.Task(t, agentID, testutil.Cols{
-		"runtime_id": sessionsRuntimeID, "status": "cancelled", "started_at": testutil.Raw("now()"), "completed_at": testutil.Raw("now()"),
+		"runtime_id": sessionsRuntimeID, "issue_id": issueID, "status": "cancelled", "started_at": testutil.Raw("now()"), "completed_at": testutil.Raw("now()"),
 		"context": []byte(`{"sessions_remote_cleanup":{"status":"unknown","remote_session_id":"sess-pinned"}}`),
 	})
 	cleanupTask(sessionsTaskID)
@@ -4510,7 +4514,7 @@ func TestAckTaskCancelled_ConfirmsOnlyCancelledSessionsTasks(t *testing.T) {
 	}
 
 	ordinaryTaskID := dbfx.Task(t, agentID, testutil.Cols{
-		"runtime_id": ordinaryRuntimeID, "status": "cancelled", "started_at": testutil.Raw("now()"), "completed_at": testutil.Raw("now()"), "context": []byte(`{"sentinel":"keep"}`),
+		"runtime_id": ordinaryRuntimeID, "issue_id": issueID, "status": "cancelled", "started_at": testutil.Raw("now()"), "completed_at": testutil.Raw("now()"), "context": []byte(`{"sentinel":"keep"}`),
 	})
 	cleanupTask(ordinaryTaskID)
 	ack(ordinaryTaskID, map[string]any{"remote_cleanup_status": "confirmed", "remote_session_id": "sess-forged"})
@@ -4523,7 +4527,7 @@ func TestAckTaskCancelled_ConfirmsOnlyCancelledSessionsTasks(t *testing.T) {
 	}
 
 	completedSessionsTaskID := dbfx.Task(t, agentID, testutil.Cols{
-		"runtime_id": sessionsRuntimeID, "status": "completed", "started_at": testutil.Raw("now()"), "completed_at": testutil.Raw("now()"), "context": []byte(`{"sentinel":"keep"}`),
+		"runtime_id": sessionsRuntimeID, "issue_id": issueID, "status": "completed", "started_at": testutil.Raw("now()"), "completed_at": testutil.Raw("now()"), "context": []byte(`{"sentinel":"keep"}`),
 	})
 	cleanupTask(completedSessionsTaskID)
 	ack(completedSessionsTaskID, map[string]any{"remote_cleanup_status": "confirmed", "remote_session_id": "sess-forged"})
