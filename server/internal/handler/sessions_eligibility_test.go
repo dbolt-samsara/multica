@@ -110,12 +110,13 @@ func TestSessionsCommentDelegationStoresPerTaskModelOverride(t *testing.T) {
 	}
 }
 
-func TestCommentModelOverrideRejectsNonSessionsAgentBeforeSaving(t *testing.T) {
+func TestCommentModelOverrideRejectsUnsupportedRuntimeBeforeSaving(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	agentID := createHandlerTestAgent(t, "non-sessions model target", nil)
-	issueID := dbfx.Issue(t, "Reject non-Sessions model", testutil.Cols{
+	runtimeID := createProviderRuntime(t, "mcode")
+	agentID := dbfx.Agent(t, "unsupported model target", runtimeID, testutil.Cols{"owner_id": testUserID})
+	issueID := dbfx.Issue(t, "Reject unsupported model", testutil.Cols{
 		"creator_type": "member", "creator_id": testUserID,
 	})
 	content := fmt.Sprintf("[@Local Worker](mention://agent/%s) research this", agentID)
@@ -127,46 +128,51 @@ func TestCommentModelOverrideRejectsNonSessionsAgentBeforeSaving(t *testing.T) {
 	)).Want(http.StatusBadRequest)
 }
 
-func TestCreateIssueStoresSessionsModelOverrideOnAutomaticTask(t *testing.T) {
+func TestCreateIssueStoresModelOverrideOnAutomaticTask(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	ctx := context.Background()
-	runtimeID := createProviderRuntime(t, "sessions")
-	agentID := dbfx.Agent(t, "sessions create model override", runtimeID, testutil.Cols{
-		"owner_id":        testUserID,
-		"permission_mode": "private",
-	})
-	resp := testutil.Call(t, testHandler.CreateIssue,
-		newRequest(http.MethodPost, "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
-			"title":         "Sessions create model override",
-			"status":        "todo",
-			"assignee_type": "agent",
-			"assignee_id":   agentID,
-			"model":         "  claude-fable-5-1  ",
-		}),
-	).Want(http.StatusCreated)
-	var issue IssueResponse
-	resp.JSON(&issue)
-	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM issue WHERE id = $1`, issue.ID) })
+	for _, provider := range []string{"sessions", "codex"} {
+		t.Run(provider, func(t *testing.T) {
+			ctx := context.Background()
+			runtimeID := createProviderRuntime(t, provider)
+			agentID := dbfx.Agent(t, provider+" create model override", runtimeID, testutil.Cols{
+				"owner_id":        testUserID,
+				"permission_mode": "private",
+			})
+			resp := testutil.Call(t, testHandler.CreateIssue,
+				newRequest(http.MethodPost, "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+					"title":         provider + " create model override",
+					"status":        "todo",
+					"assignee_type": "agent",
+					"assignee_id":   agentID,
+					"model":         "  selected/model  ",
+				}),
+			).Want(http.StatusCreated)
+			var issue IssueResponse
+			resp.JSON(&issue)
+			t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM issue WHERE id = $1`, issue.ID) })
 
-	tasks, err := testHandler.Queries.ListTasksByIssue(ctx, parseUUID(issue.ID))
-	if err != nil {
-		t.Fatalf("list created issue tasks: %v", err)
-	}
-	if len(tasks) != 1 || !tasks[0].ModelOverride.Valid || tasks[0].ModelOverride.String != "claude-fable-5-1" {
-		t.Fatalf("tasks = %+v, want one automatic task with model override", tasks)
+			tasks, err := testHandler.Queries.ListTasksByIssue(ctx, parseUUID(issue.ID))
+			if err != nil {
+				t.Fatalf("list created issue tasks: %v", err)
+			}
+			if len(tasks) != 1 || !tasks[0].ModelOverride.Valid || tasks[0].ModelOverride.String != "selected/model" {
+				t.Fatalf("tasks = %+v, want one automatic task with model override", tasks)
+			}
+		})
 	}
 }
 
-func TestCreateIssueRejectsModelOverrideForNonSessionsAssignee(t *testing.T) {
+func TestCreateIssueRejectsModelOverrideForUnsupportedRuntime(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	agentID := createHandlerTestAgent(t, "non-sessions create model target", nil)
+	runtimeID := createProviderRuntime(t, "mcode")
+	agentID := dbfx.Agent(t, "unsupported create model target", runtimeID, testutil.Cols{"owner_id": testUserID})
 	testutil.Call(t, testHandler.CreateIssue,
 		newRequest(http.MethodPost, "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
-			"title":         "Reject non-Sessions create model",
+			"title":         "Reject unsupported create model",
 			"status":        "todo",
 			"assignee_type": "agent",
 			"assignee_id":   agentID,

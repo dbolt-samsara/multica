@@ -430,7 +430,7 @@ describe("comment composers", () => {
     });
   });
 
-  it("offers and submits a per-run model for one explicit Sessions agent mention", async () => {
+  it("offers and submits a per-run model for one explicit model-capable agent mention", async () => {
     const agentId = "11111111-1111-4111-8111-111111111111";
     commentPreviewState.agents = [{
       id: agentId,
@@ -438,7 +438,7 @@ describe("comment composers", () => {
       source: "mention_agent",
       reason: "mentioned",
       runtime_id: "runtime-sessions",
-      runtime_provider: "sessions",
+      runtime_provider: "codex",
       runtime_online: true,
     }];
     const { container, onSubmit } = renderCommentInput(

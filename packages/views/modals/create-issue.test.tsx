@@ -789,20 +789,20 @@ describe("CreateIssueModal", () => {
     expect(mockToastDismiss).toHaveBeenCalledWith("toast-1");
   });
 
-  it("offers a per-run model picker for a Sessions assignee and submits the selection", async () => {
+  it("offers a per-run model picker for any model-capable agent and submits the selection", async () => {
     const user = userEvent.setup();
     const agentId = "8756121f-55cf-4ed6-ad69-a9b6d0435622";
     mockDraftStore.draft.manual.assigneeType = "agent";
     mockDraftStore.draft.manual.assigneeId = agentId;
     mockAgentList.value = [{
       id: agentId,
-      runtime_id: "runtime-sessions",
+      runtime_id: "runtime-codex",
       runtime_bound: true,
       name: "DevAgents Cloud",
     }];
     mockRuntimeList.value = [{
-      id: "runtime-sessions",
-      provider: "sessions",
+      id: "runtime-codex",
+      provider: "codex",
       status: "online",
     }];
 
