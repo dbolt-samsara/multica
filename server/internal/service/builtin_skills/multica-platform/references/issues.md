@@ -273,10 +273,11 @@ cross-issue serial chains and triage batches rely on that.
 
 ## Choose a model for one Sessions delegation
 
-When delegating to exactly one agent whose runtime is DevTools Sessions, the
-comment can select the model for that run without changing the agent's shared
-default:
+When starting exactly one agent whose runtime is DevTools Sessions, select the
+model for that run without changing the agent's shared default:
 
+- In **Create manually**, assign the Sessions agent while the issue is in a
+  runnable status. The **Run model** picker appears above the property toolbar.
 - In the issue UI, add exactly one explicit Sessions agent mention. The
   **Run model** picker appears below the composer; choose the model before
   sending.

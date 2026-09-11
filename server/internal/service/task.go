@@ -109,6 +109,24 @@ func (s *TaskService) isSessionsAgent(ctx context.Context, agent db.Agent) (bool
 	return runtime.Provider == "sessions", nil
 }
 
+func (s *TaskService) validateTaskModelOverride(ctx context.Context, agent db.Agent, modelOverride pgtype.Text) (pgtype.Text, error) {
+	if !modelOverride.Valid {
+		return pgtype.Text{}, nil
+	}
+	model := strings.TrimSpace(modelOverride.String)
+	if model == "" {
+		return pgtype.Text{}, fmt.Errorf("model override is empty")
+	}
+	sessions, err := s.isSessionsAgent(ctx, agent)
+	if err != nil {
+		return pgtype.Text{}, err
+	}
+	if !sessions {
+		return pgtype.Text{}, fmt.Errorf("per-task model override requires the Sessions runtime")
+	}
+	return pgtype.Text{String: model, Valid: true}, nil
+}
+
 // validateSessionsIssueInvocation keeps the Sessions boundary at the durable
 // task queue. HTTP admission is friendlier, but every enqueue route must also
 // fail closed here: autopilot, squads, handoffs, and delegated agent work all
@@ -1226,6 +1244,14 @@ func (s *TaskService) EnqueueTaskForIssueByActor(ctx context.Context, issue db.I
 	return s.enqueueIssueTask(ctx, issue, pgtype.UUID{}, false, "", actorUserID, pgtype.UUID{}, pgtype.Timestamptz{})
 }
 
+// EnqueueTaskForIssueWithModel is the direct-human issue-create path for a
+// Sessions per-run model. The override is persisted on the new task and never
+// mutates the assigned agent's shared default.
+func (s *TaskService) EnqueueTaskForIssueWithModel(ctx context.Context, issue db.Issue, modelOverride string) (db.AgentTaskQueue, error) {
+	model := strings.TrimSpace(modelOverride)
+	return s.enqueueIssueTaskWithCommentPlan(ctx, issue, pgtype.UUID{}, nil, false, "", pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{}, pgtype.UUID{}, pgtype.Text{String: model, Valid: model != ""})
+}
+
 // EnqueueTaskForIssueWithHandoff is the backward-compatible assign/promote
 // variant used when an installed client still sends handoff_note. The note is
 // persisted on the task so both old and current daemons can render it in the
@@ -1238,7 +1264,7 @@ func (s *TaskService) EnqueueTaskForIssueWithHandoff(ctx context.Context, issue 
 // agent task. It preserves that task as the delegation provenance rather than
 // incorrectly labelling the owner as a direct human actor.
 func (s *TaskService) EnqueueTaskForIssueDelegated(ctx context.Context, issue db.Issue, sourceTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
-	return s.enqueueIssueTaskWithCommentPlan(ctx, issue, pgtype.UUID{}, nil, false, "", pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{}, sourceTaskID)
+	return s.enqueueIssueTaskWithCommentPlan(ctx, issue, pgtype.UUID{}, nil, false, "", pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{}, sourceTaskID, pgtype.Text{})
 }
 
 // enqueueIssueTask is the shared implementation behind EnqueueTaskForIssue
@@ -1287,10 +1313,10 @@ func (s *TaskService) ResolveIssueReviewSHAParam(ctx context.Context, issueID pg
 }
 
 func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz) (db.AgentTaskQueue, error) {
-	return s.enqueueIssueTaskWithCommentPlan(ctx, issue, triggerCommentID, nil, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt, pgtype.UUID{})
+	return s.enqueueIssueTaskWithCommentPlan(ctx, issue, triggerCommentID, nil, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt, pgtype.UUID{}, pgtype.Text{})
 }
 
-func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, delegatedFromTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
+func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, delegatedFromTaskID pgtype.UUID, modelOverride pgtype.Text) (db.AgentTaskQueue, error) {
 	if !issue.AssigneeID.Valid {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
 		return db.AgentTaskQueue{}, fmt.Errorf("issue has no assignee")
@@ -1308,6 +1334,10 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 	if !agent.RuntimeID.Valid {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "agent has no runtime")
 		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
+	}
+	modelOverride, err = s.validateTaskModelOverride(ctx, agent, modelOverride)
+	if err != nil {
+		return db.AgentTaskQueue{}, err
 	}
 
 	// The issue assignee reacting to an agent-authored comment is a
@@ -1363,6 +1393,7 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		DelegatedFromTaskID:  attrDelegatedFrom,
 		TriggerEvidenceKind:  attrEvidenceKind,
 		TriggerEvidenceRefID: attrEvidenceRef,
+		ModelOverride:        modelOverride,
 		// Stamp the reviewed head so dedup can distinguish this run's target
 		// from a later request against a new HEAD (TEN-356).
 		HeadSha: headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
@@ -1490,18 +1521,9 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 		slog.Error("mention task enqueue failed: agent has no runtime", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
 	}
-	if modelOverride.Valid {
-		modelOverride.String = strings.TrimSpace(modelOverride.String)
-		if modelOverride.String == "" {
-			return db.AgentTaskQueue{}, fmt.Errorf("model override is empty")
-		}
-		runtime, runtimeErr := s.Queries.GetAgentRuntime(ctx, agent.RuntimeID)
-		if runtimeErr != nil {
-			return db.AgentTaskQueue{}, fmt.Errorf("load agent runtime for model override: %w", runtimeErr)
-		}
-		if runtime.Provider != "sessions" {
-			return db.AgentTaskQueue{}, fmt.Errorf("per-task model override requires the Sessions runtime")
-		}
+	modelOverride, err = s.validateTaskModelOverride(ctx, agent, modelOverride)
+	if err != nil {
+		return db.AgentTaskQueue{}, err
 	}
 
 	// An explicit mention / thread-parent / squad-leader hop from an
@@ -5764,7 +5786,7 @@ func (s *TaskService) promoteNewestSurvivingComment(ctx context.Context, ids []p
 func (s *TaskService) enqueueRerunTask(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
 	if issue.AssigneeType.String == "agent" && issue.AssigneeID.Valid &&
 		util.UUIDToString(issue.AssigneeID) == util.UUIDToString(agentID) {
-		return s.enqueueIssueTaskWithCommentPlan(ctx, issue, triggerCommentID, coalescedCommentIDs, true, "", actorUserID, rerunOfTaskID, pgtype.Timestamptz{}, pgtype.UUID{})
+		return s.enqueueIssueTaskWithCommentPlan(ctx, issue, triggerCommentID, coalescedCommentIDs, true, "", actorUserID, rerunOfTaskID, pgtype.Timestamptz{}, pgtype.UUID{}, pgtype.Text{})
 	}
 	return s.enqueueMentionTaskWithCommentPlan(ctx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, true, "", actorUserID, rerunOfTaskID, pgtype.Text{})
 }

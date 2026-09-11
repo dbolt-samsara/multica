@@ -1,7 +1,7 @@
 "use client";
 
 import { issueStatusCategory } from "@multica/core/issues";
-import { useState, useRef, useEffect, useLayoutEffect } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AppLink, resolveClickIntent, useNavigation } from "../navigation";
 import {
@@ -99,6 +99,9 @@ import { IssuePickerModal } from "./issue-picker-modal";
 import { useT } from "../i18n";
 import { SourceContextPreviewCard, useSourceContextFailureMessage } from "./source-context-preview";
 import { useIssueLimitUpgradePrompt } from "./use-issue-limit-upgrade-prompt";
+import { agentListOptions } from "@multica/core/workspace/queries";
+import { runtimeListOptions } from "@multica/core/runtimes";
+import { ModelDropdown } from "../agents/components/model-dropdown";
 
 // ---------------------------------------------------------------------------
 // ManualCreatePanel — manual-mode body of the create-issue dialog. Renders
@@ -271,6 +274,7 @@ export function ManualCreatePanel({
     }
     return draft.manual.assigneeId;
   });
+  const [modelOverride, setModelOverride] = useState("");
   const [startDate, setStartDate] = useState<string | null>(draft.manual.startDate);
   const [dueDate, setDueDate] = useState<string | null>(
     (data?.due_date as string | undefined) ?? draft.shared.dueDate,
@@ -322,6 +326,30 @@ export function ManualCreatePanel({
   // List cache usually has it already, so this resolves synchronously.
   const wsId = useWorkspaceId();
   const { categoryOf: draftStatusCategory } = useIssueStatuses(wsId);
+  const { data: agents = [] } = useQuery(agentListOptions(wsId));
+  const { data: runtimes = [] } = useQuery(runtimeListOptions(wsId));
+  const selectedAgent = useMemo(
+    () =>
+      assigneeType === "agent"
+        ? agents.find((agent) => agent.id === assigneeId)
+        : undefined,
+    [agents, assigneeId, assigneeType],
+  );
+  const selectedRuntime = useMemo(
+    () =>
+      selectedAgent?.runtime_id
+        ? runtimes.find((runtime) => runtime.id === selectedAgent.runtime_id)
+        : undefined,
+    [runtimes, selectedAgent?.runtime_id],
+  );
+  const canSelectRunModel =
+    !anchorCommentId &&
+    selectedRuntime?.provider === "sessions" &&
+    draftStatusCategory(status) !== "backlog";
+  const modelTargetID = canSelectRunModel ? assigneeId ?? "" : "";
+  useEffect(() => {
+    setModelOverride("");
+  }, [modelTargetID]);
   const { data: workspaceProperties = [] } = useQuery(propertyListOptions(wsId));
   const { data: parentIssue } = useQuery({
     ...issueDetailOptions(wsId, parentIssueId ?? ""),
@@ -428,6 +456,7 @@ export function ManualCreatePanel({
     setParentIssueId(undefined);
     setStage(null);
     setChildIssues([]);
+    setModelOverride("");
     // Keep the just-used assignee for the next issue in the batch; reset
     // everything else across the manual + shared slots.
     setManual({
@@ -529,6 +558,7 @@ export function ManualCreatePanel({
           // Stage is only meaningful for a sub-issue (relative to its siblings).
           stage: parentIssueId && stage != null ? stage : undefined,
           project_id: projectId,
+          ...(modelOverride ? { model: modelOverride } : {}),
         });
       }
 
@@ -974,6 +1004,21 @@ export function ManualCreatePanel({
             {/* Pre-trigger preview — a passive caption above the toolbar; reveals
                 when an agent assignee will pick the issue up. */}
             <CreateRunHint assigneeType={assigneeType} assigneeId={assigneeId} status={status} />
+
+            {canSelectRunModel && selectedRuntime && (
+              <div className="w-full max-w-sm px-4 pb-2 shrink-0">
+                <ModelDropdown
+                  runtimeId={selectedRuntime.id}
+                  runtimeOnline={selectedRuntime.status === "online"}
+                  value={modelOverride}
+                  onChange={setModelOverride}
+                  disabled={submitting}
+                  label={tIssues(($) => $.comment.run_model_label)}
+                  defaultLabel={tIssues(($) => $.comment.run_model_default)}
+                  clearLabel={tIssues(($) => $.comment.run_model_clear)}
+                />
+              </div>
+            )}
 
             {/* Property toolbar — each field renders per the Settings → Preferences → Issue creation
                 selection (see showField above). */}
