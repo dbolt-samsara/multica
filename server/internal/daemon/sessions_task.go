@@ -24,6 +24,7 @@ var fullGitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // remote dispatch from observing mutable daemon state halfway through create.
 type sessionsIntent struct {
 	prompt, repository, thread string
+	model                      string
 	metadata, scopes           []string
 	maxSpendUSD                float64
 }
@@ -42,10 +43,15 @@ func buildSessionsIntent(task Task) (sessionsIntent, error) {
 	if task.Agent == nil {
 		return sessionsIntent{}, fmt.Errorf("Sessions runtime requires claimed agent instructions")
 	}
+	model := strings.TrimSpace(task.Agent.Model)
+	if model == "" {
+		model = "devtools/standard"
+	}
 	return sessionsIntent{
 		prompt:      buildSessionsPrompt(task, repo),
 		repository:  repo,
 		thread:      "multica:" + task.ID,
+		model:       model,
 		metadata:    []string{"multica_task_id=" + task.ID, "multica_issue_id=" + task.IssueID},
 		scopes:      append([]string(nil), sessionsMCPScopes...),
 		maxSpendUSD: sessionsMaxSpendUSD,
@@ -122,7 +128,7 @@ func (d *Daemon) runSessionsTask(ctx context.Context, task Task, taskLog *slog.L
 		return TaskResult{}, fmt.Errorf("create Sessions backend: %w", err)
 	}
 	var pinned bool
-	session, err := backend.Execute(ctx, intent.prompt, agent.ExecOptions{Model: "devtools/standard", Sessions: &agent.SessionsExecOptions{
+	session, err := backend.Execute(ctx, intent.prompt, agent.ExecOptions{Model: intent.model, Sessions: &agent.SessionsExecOptions{
 		Repository: intent.repository, Thread: intent.thread, Metadata: intent.metadata, MCPScopes: intent.scopes, MaxSpendUSD: intent.maxSpendUSD,
 		PersistSessionID: func(_ context.Context, id string) error {
 			pinCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

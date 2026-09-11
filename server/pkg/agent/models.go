@@ -151,7 +151,7 @@ const modelCacheTTL = 60 * time.Second
 
 // ListModels returns the models supported by the given agent provider.
 // For providers with a known static catalog it returns the baked-in
-// list; for providers with a CLI discovery mechanism (claude, codex,
+// list; for providers with a CLI discovery mechanism (claude, codex, sessions,
 // opencode, pi, openclaw) it shells out with caching and falls back where the
 // provider has a safe static catalog.
 //
@@ -190,6 +190,10 @@ func ListModels(ctx context.Context, providerType string, runtimeCmd Command) (C
 	case "codex":
 		return cachedDiscovery(discoveryCacheKey(providerType, runtimeCmd), func() (Catalog, error) {
 			return discovered(discoverCodexModels(ctx, runtimeCmd), nil)
+		})
+	case "sessions":
+		return cachedDiscovery(discoveryCacheKey(providerType, runtimeCmd), func() (Catalog, error) {
+			return discovered(discoverSessionsModels(ctx, runtimeCmd))
 		})
 	case "antigravity":
 		// agy 1.0.6 added a `--model` flag plus an `agy models` catalog

@@ -9,13 +9,16 @@ import (
 )
 
 func TestBuildSessionsIntentIsPinnedOrSupportedBranchAndIssueOnly(t *testing.T) {
-	task := Task{ID: "task-1", IssueID: "issue-1", IssueIdentifier: "MUL-1", ThreadName: "Fix it", IssueDescription: "The thing is broken.", WorkspaceContext: "be careful", ProjectDescription: "project", TriggerCommentContent: "please fix", Agent: &AgentData{Instructions: "write tests"}, Repos: []RepoData{{URL: "https://github.com/acme/widget.git", Ref: "0123456789abcdef0123456789abcdef01234567"}}}
+	task := Task{ID: "task-1", IssueID: "issue-1", IssueIdentifier: "MUL-1", ThreadName: "Fix it", IssueDescription: "The thing is broken.", WorkspaceContext: "be careful", ProjectDescription: "project", TriggerCommentContent: "please fix", Agent: &AgentData{Instructions: "write tests", Model: "  openai/gpt-5.6  "}, Repos: []RepoData{{URL: "https://github.com/acme/widget.git", Ref: "0123456789abcdef0123456789abcdef01234567"}}}
 	intent, err := buildSessionsIntent(task)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if intent.repository != "acme/widget@0123456789abcdef0123456789abcdef01234567" || intent.thread != "multica:task-1" {
 		t.Fatalf("intent = %+v", intent)
+	}
+	if intent.model != "openai/gpt-5.6" {
+		t.Fatalf("model = %q, want configured selector verbatim", intent.model)
 	}
 	if !reflect.DeepEqual(intent.scopes, sessionsMCPScopes) {
 		t.Fatalf("scopes = %v", intent.scopes)
@@ -42,6 +45,9 @@ func TestBuildSessionsIntentAllowsSupportedBranch(t *testing.T) {
 	}
 	if intent.repository != "samsara-dev/devbox-client@main" {
 		t.Fatalf("repository = %q", intent.repository)
+	}
+	if intent.model != "devtools/standard" {
+		t.Fatalf("model = %q, want default", intent.model)
 	}
 }
 
