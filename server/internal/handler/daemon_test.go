@@ -2042,6 +2042,58 @@ func TestClaimTask_ProjectGithubReposOverrideWorkspaceRepos(t *testing.T) {
 	}
 }
 
+// A task's exact review commit is dispatch-scoped and must win over the
+// project's default checkout ref. Sessions materializes resp.Repos directly;
+// returning the project ref here silently runs delegated work on stale code.
+func TestClaimTask_IssueReviewSHAOverridesProjectRepoDefaultRef(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	projectID := dbfx.Project(t, "Claim task exact ref override")
+	const repoURL = "https://github.com/example/exact-ref-repo"
+	dbfx.Exec(t, `
+		INSERT INTO project_resource (
+			project_id, workspace_id, resource_type, resource_ref, position
+		) VALUES ($1, $2, 'github_repo', $3::jsonb, 0)
+	`, projectID, testWorkspaceID, `{"url":"`+repoURL+`","ref":"main"}`)
+
+	var agentID, runtimeID string
+	dbfx.QueryRow(t,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
+		testWorkspaceID,
+	).Scan(&agentID, &runtimeID)
+
+	issueID := dbfx.Issue(t, "issue exact ref beats project default", testutil.Cols{
+		"project_id": projectID,
+		"priority":   "medium",
+		"number":     88011,
+	})
+	const exactSHA = "0cfb91017f05177c352a562c9897d2ede4a67886"
+	dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id": runtimeID,
+		"issue_id":   issueID,
+		"context":    `{"head_sha":"` + exactSHA + `"}`,
+	})
+
+	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/claim", nil, testWorkspaceID, "test-claim-exact-ref")
+	req = withURLParam(req, "runtimeId", runtimeID)
+	w := testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK)
+
+	var resp struct {
+		Task *struct {
+			Repos []RepoData `json:"repos"`
+		} `json:"task"`
+	}
+	w.JSON(&resp)
+	if resp.Task == nil || len(resp.Task.Repos) != 1 {
+		t.Fatalf("task repos = %+v, want one project repository", resp.Task)
+	}
+	if got := resp.Task.Repos[0]; got.URL != repoURL || got.Ref != exactSHA {
+		t.Fatalf("task repo = %+v, want URL %q at exact issue ref %q", got, repoURL, exactSHA)
+	}
+}
+
 // When an issue belongs to a project that has a description, the claim handler
 // must surface that description as project_description so the daemon can inject
 // it into the brief. This is the handler-side boundary the execenv tests can't

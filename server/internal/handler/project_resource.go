@@ -891,6 +891,34 @@ func (c claimProjectContext) applyTo(resp *AgentTaskResponse) {
 	resp.Repos = c.Repos
 }
 
+// applyTaskRepositoryRefOverride gives the exact commit captured when an issue
+// task was dispatched precedence over a mutable project/workspace default ref.
+// The task context is server-authored by the review-head enqueue path. Restrict
+// the override to one GitHub repository and a full SHA: with multiple repos the
+// context does not identify which repository owns the commit, so guessing would
+// be less safe than preserving the configured refs.
+func applyTaskRepositoryRefOverride(resp *AgentTaskResponse, taskContext []byte) {
+	if resp == nil || len(resp.Repos) != 1 {
+		return
+	}
+	var taskRef struct {
+		HeadSHA string `json:"head_sha"`
+	}
+	if json.Unmarshal(taskContext, &taskRef) != nil {
+		return
+	}
+	sha := strings.TrimSpace(taskRef.HeadSHA)
+	if len(sha) != 40 {
+		return
+	}
+	for _, r := range sha {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return
+		}
+	}
+	resp.Repos[0].Ref = sha
+}
+
 // resolveClaimProjectContext loads the project context for one daemon claim.
 //
 // Every claim path (issue, chat, autopilot, quick-create) resolves the same

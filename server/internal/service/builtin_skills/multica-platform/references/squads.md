@@ -39,6 +39,10 @@ Squad-routed work runs through the squad's `leader_id` agent. Consequences:
 - squad-assigned autopilot resolves to the leader;
 - squad members are not automatically fanned out;
 - squad `instructions` are leader briefing content, not member prompts.
+- a delegated worker's result wakes the same leader exactly once, including
+  when it arrives before the active leader turn finishes; the leader continues
+  any already-authorized non-gated next step without waiting for another human
+  comment, while a real approval or other HumanGate still stops the workflow.
 
 ## CLI
 
