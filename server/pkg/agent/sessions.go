@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -111,12 +112,9 @@ func (b *sessionsBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	go func() {
 		defer close(messages)
 		defer close(result)
-		// `session watch` is a long-polling command. It may not produce stdout
-		// until the remote Session reaches a terminal state, so Output would hide
-		// all useful activity from the daemon's semantic-idle watchdog. Stream its
-		// lines as they arrive and emit a lightweight status heartbeat while the
-		// long poll is quiet; a healthy Cloud Session must not be cancelled merely
-		// because its watcher buffers output.
+		// `session watch` is a long-lived JSONL stream. Decode each complete line
+		// before waiting for the process to exit so the existing task-message path
+		// can persist and publish useful activity while the Session is running.
 		watch := b.cfg.commandAt(b.cfg.ExecutablePath).exec(ctx, "session", "watch", created.SessionID, "--json", "--since", "0")
 		watch.Env = cmd.Env
 		watchOut, pipeErr := watch.StdoutPipe()
@@ -128,37 +126,31 @@ func (b *sessionsBackend) Execute(ctx context.Context, prompt string, opts ExecO
 			result <- Result{Status: "failed", Error: fmt.Sprintf("Sessions watch start failed: %v", err), SessionID: created.SessionID}
 			return
 		}
-		watchDone := make(chan error, 1)
-		go func() { watchDone <- watch.Wait() }()
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-		var watched strings.Builder
-		readDone := make(chan struct{})
-		go func() {
-			defer close(readDone)
-			buf := make([]byte, 4096)
-			for {
-				n, err := watchOut.Read(buf)
-				if n > 0 {
-					watched.Write(buf[:n])
-				}
-				if err != nil {
-					return
-				}
+		scanner := bufio.NewScanner(watchOut)
+		// Watcher fields are bounded by the Sessions API, but keep enough room for
+		// a long redacted input summary without accepting an unbounded line.
+		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+		highestSeq := -1
+	watchLines:
+		for scanner.Scan() {
+			message, seq, ok := parseSessionsWatchLine(scanner.Bytes(), highestSeq, created.SessionID)
+			if !ok {
+				continue
 			}
-		}()
-		var watchErr error
-		for {
+			highestSeq = seq
+			if message.Type == "" {
+				continue
+			}
 			select {
-			case watchErr = <-watchDone:
-				<-readDone
-				goto watchedDone
-			case <-ticker.C:
-				messages <- Message{Type: MessageStatus, SessionID: created.SessionID}
+			case messages <- message:
+			case <-ctx.Done():
+				break watchLines
 			}
 		}
-
-	watchedDone:
+		watchErr := watch.Wait()
+		if scanErr := scanner.Err(); scanErr != nil && watchErr == nil {
+			watchErr = scanErr
+		}
 		if ctx.Err() != nil {
 			cleanupSessionsProcess(b, cmd.Env, created.SessionID)
 		}
@@ -166,27 +158,6 @@ func (b *sessionsBackend) Execute(ctx context.Context, prompt string, opts ExecO
 		if getErr != nil {
 			result <- Result{Status: "failed", Error: fmt.Sprintf("Sessions final read failed: %v", getErr), SessionID: created.SessionID}
 			return
-		}
-		highestSeq := -1
-		for _, line := range strings.Split(strings.TrimSpace(watched.String()), "\n") {
-			var e struct {
-				Type, Text, Tool, InputSummary string
-				Seq                            int
-			}
-			if json.Unmarshal([]byte(line), &e) != nil || e.Seq <= highestSeq {
-				continue
-			}
-			highestSeq = e.Seq
-			switch e.Type {
-			case "assistant_delta":
-				messages <- Message{Type: MessageText, Content: e.Text}
-			case "tool_call_started":
-				messages <- Message{Type: MessageToolUse, Tool: e.Tool, Content: e.InputSummary}
-			case "tool_call_finished":
-				messages <- Message{Type: MessageToolResult, Tool: e.Tool}
-			case "state_changed":
-				messages <- Message{Type: MessageStatus, SessionID: created.SessionID}
-			}
 		}
 		switch row.State {
 		case "succeeded":
@@ -204,6 +175,30 @@ func (b *sessionsBackend) Execute(ctx context.Context, prompt string, opts ExecO
 		}
 	}()
 	return &Session{Messages: messages, Result: result}, nil
+}
+
+func parseSessionsWatchLine(line []byte, highestSeq int, sessionID string) (Message, int, bool) {
+	var event struct {
+		Type, Text, Tool, InputSummary string
+		Seq                            int
+	}
+	if json.Unmarshal(line, &event) != nil || event.Seq <= highestSeq {
+		return Message{}, highestSeq, false
+	}
+	switch event.Type {
+	case "assistant_delta":
+		return Message{Type: MessageText, Content: event.Text}, event.Seq, true
+	case "tool_call_started":
+		return Message{Type: MessageToolUse, Tool: event.Tool, Content: event.InputSummary}, event.Seq, true
+	case "tool_call_finished":
+		return Message{Type: MessageToolResult, Tool: event.Tool}, event.Seq, true
+	case "state_changed":
+		return Message{Type: MessageStatus, SessionID: sessionID}, event.Seq, true
+	default:
+		// Advance the sequence for intentionally unprojected fields such as cost
+		// ticks so a duplicate replay cannot be mistaken for new activity.
+		return Message{}, event.Seq, true
+	}
 }
 
 type sessionsFinalRow struct {
@@ -231,22 +226,28 @@ func sessionsDispatchError(err error) error {
 }
 
 func getSessionsFinal(b *sessionsBackend, env []string, id string) (sessionsFinalRow, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := b.cfg.commandAt(b.cfg.ExecutablePath).exec(ctx, "session", "get", id, "--json")
-	cmd.Env = env
-	out, err := cmd.Output()
-	if err != nil {
-		return sessionsFinalRow{}, err
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		cmd := b.cfg.commandAt(b.cfg.ExecutablePath).exec(ctx, "session", "get", id, "--json")
+		cmd.Env = env
+		out, err := cmd.Output()
+		cancel()
+		if err != nil {
+			return sessionsFinalRow{}, err
+		}
+		var row sessionsFinalRow
+		if err := json.Unmarshal(out, &row); err != nil {
+			return sessionsFinalRow{}, fmt.Errorf("decode Sessions final response: %w", err)
+		}
+		if row.State == "" {
+			return sessionsFinalRow{}, fmt.Errorf("Sessions final response has no state")
+		}
+		if row.State == "succeeded" || row.State == "failed" || row.State == "cancelled" || time.Now().After(deadline) {
+			return row, nil
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
-	var row sessionsFinalRow
-	if err := json.Unmarshal(out, &row); err != nil {
-		return sessionsFinalRow{}, fmt.Errorf("decode Sessions final response: %w", err)
-	}
-	if row.State == "" {
-		return sessionsFinalRow{}, fmt.Errorf("Sessions final response has no state")
-	}
-	return row, nil
 }
 func cleanupSessionsProcess(b *sessionsBackend, env []string, id string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

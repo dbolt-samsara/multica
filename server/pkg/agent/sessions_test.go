@@ -193,6 +193,111 @@ func TestSessionsBackendDispatchWatchAndGet(t *testing.T) {
 	}
 }
 
+func TestSessionsBackendStreamsWatchEventsBeforeExit(t *testing.T) {
+	dir := t.TempDir()
+	readyPath := filepath.Join(dir, "watch-ready")
+	script := filepath.Join(dir, "devtools")
+	body := `#!/bin/sh
+set -eu
+case "$1 $2" in
+  "session dispatch") cat >/dev/null; printf '%s\n' '{"session_id":"sess-live"}' ;;
+  "session watch")
+    printf '%s\n' '{"type":"assistant_delta","seq":1,"session_id":"sess-live","text":"working now"}'
+    : > "$FAKE_WATCH_READY"
+    sleep 2
+    printf '%s\n' '{"type":"state_changed","seq":2,"session_id":"sess-live","from":"running","to":"succeeded"}'
+    ;;
+  "session get") printf '%s\n' '{"session_id":"sess-live","state":"succeeded","result_summary":"finished"}' ;;
+  *) exit 64 ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := ResolveBackend("sessions", Config{ExecutablePath: script, Env: map[string]string{
+		"FAKE_WATCH_READY": readyPath,
+	}, Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := backend.Execute(t.Context(), "prompt", ExecOptions{Model: "devtools/standard", Sessions: &SessionsExecOptions{
+		Repository: "samsara-dev/example@0123456789abcdef0123456789abcdef01234567", Thread: "multica:task-live",
+		MCPScopes: []string{"mcp:github"}, MaxSpendUSD: 1,
+		PersistSessionID: func(context.Context, string) error { return nil },
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, statErr := os.Stat(readyPath); statErr == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("watcher did not emit its first line")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case message := <-session.Messages:
+		if message.Type != MessageText || message.Content != "working now" {
+			t.Fatalf("first live message = %+v", message)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("watch event was buffered until process exit")
+	}
+	for range session.Messages {
+	}
+	if result := <-session.Result; result.Status != "completed" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestSessionsBackendWaitsForTerminalReadConvergence(t *testing.T) {
+	dir := t.TempDir()
+	getCount := filepath.Join(dir, "get-count")
+	script := filepath.Join(dir, "devtools")
+	body := `#!/bin/sh
+set -eu
+case "$1 $2" in
+  "session dispatch") cat >/dev/null; printf '%s\n' '{"session_id":"sess-race"}' ;;
+  "session watch") printf '%s\n' '{"type":"state_changed","seq":1,"session_id":"sess-race","from":"running","to":"succeeded"}' ;;
+  "session get")
+    if [ ! -e "$FAKE_GET_COUNT" ]; then
+      : > "$FAKE_GET_COUNT"
+      printf '%s\n' '{"session_id":"sess-race","state":"running"}'
+    else
+      printf '%s\n' '{"session_id":"sess-race","state":"succeeded","result_summary":"finished"}'
+    fi
+    ;;
+  *) exit 64 ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := ResolveBackend("sessions", Config{ExecutablePath: script, Env: map[string]string{
+		"FAKE_GET_COUNT": getCount,
+	}, Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := backend.Execute(t.Context(), "prompt", ExecOptions{Model: "devtools/standard", Sessions: &SessionsExecOptions{
+		Repository: "samsara-dev/example@0123456789abcdef0123456789abcdef01234567", Thread: "multica:task-race",
+		MCPScopes: []string{"mcp:github"}, MaxSpendUSD: 1,
+		PersistSessionID: func(context.Context, string) error { return nil },
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range session.Messages {
+	}
+	result := <-session.Result
+	if result.Status != "completed" || result.Output != "finished" {
+		t.Fatalf("result = %+v, want converged completion", result)
+	}
+}
+
 func TestSessionsBackendDispatchPreservesBoundedStderr(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "devtools")
