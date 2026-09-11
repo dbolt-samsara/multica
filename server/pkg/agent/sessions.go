@@ -22,6 +22,50 @@ type sessionsBackend struct{ cfg Config }
 
 var immutableSessionsRepository = regexp.MustCompile(`^[^/@\s]+/[^/@\s]+@(?:[0-9a-f]{40}|main)$`)
 
+// discoverSessionsModels asks the configured DevTools CLI for AgentGateway's
+// live model selectors. Selectors are intentionally preserved verbatim:
+// AgentGateway, not Multica, owns their meaning and routing.
+func discoverSessionsModels(ctx context.Context, runtimeCmd Command) ([]Model, error) {
+	if runtimeCmd.Path == "" {
+		runtimeCmd.Path = "devtools"
+	}
+	runCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cmd := runtimeCmd.exec(runCtx, "agent", "models")
+	hideAgentWindow(cmd)
+	stdout, err := outputOwned(cmd, runtimeCmd.logger)
+	if err != nil {
+		return nil, fmt.Errorf("discover Sessions models: %w", err)
+	}
+	return parseSessionsModels(stdout), nil
+}
+
+func parseSessionsModels(stdout []byte) []Model {
+	seen := make(map[string]struct{})
+	models := make([]Model, 0)
+	for _, line := range strings.Split(string(stdout), "\n") {
+		id := strings.TrimSpace(line)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		provider := ""
+		if prefix, _, ok := strings.Cut(id, "/"); ok {
+			provider = prefix
+		}
+		models = append(models, Model{
+			ID:       id,
+			Label:    id,
+			Provider: provider,
+			Default:  id == "devtools/standard",
+		})
+	}
+	return models
+}
+
 func (b *sessionsBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
 	o := opts.Sessions
 	if o == nil || !immutableSessionsRepository.MatchString(o.Repository) || o.Thread == "" || o.MaxSpendUSD <= 0 || o.PersistSessionID == nil {

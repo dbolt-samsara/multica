@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -59,6 +60,69 @@ func TestResolveBackendSessionsIsStandalone(t *testing.T) {
 	}
 	if _, ok := backend.(*sessionsBackend); !ok {
 		t.Fatalf("backend type = %T, want *sessionsBackend", backend)
+	}
+}
+
+func TestListModelsSessionsUsesConfiguredDevtoolsCatalog(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "calls.log")
+	script := filepath.Join(dir, "devtools")
+	body := `#!/bin/sh
+set -eu
+printf '%s\n' "$*" > "$FAKE_CALLS"
+printf '%s\n' 'devtools/fast' 'openai/gpt-5.6' 'devtools/standard' 'openai/gpt-5.6' ''
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_CALLS", logPath)
+	catalog, err := ListModels(t.Context(), "sessions", NewCommand(script, nil))
+	if err != nil {
+		t.Fatalf("ListModels(sessions): %v", err)
+	}
+	want := []Model{
+		{ID: "devtools/fast", Label: "devtools/fast", Provider: "devtools"},
+		{ID: "openai/gpt-5.6", Label: "openai/gpt-5.6", Provider: "openai"},
+		{ID: "devtools/standard", Label: "devtools/standard", Provider: "devtools", Default: true},
+	}
+	if !reflect.DeepEqual(catalog.Models, want) {
+		t.Fatalf("models = %+v, want %+v", catalog.Models, want)
+	}
+	call, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(call)) != "agent models" {
+		t.Fatalf("devtools args = %q, want agent models", call)
+	}
+}
+
+func TestSessionsBackendPassesConfiguredModelVerbatim(t *testing.T) {
+	script, logPath := writeFakeDevtools(t)
+	backend, err := ResolveBackend("sessions", Config{ExecutablePath: script, Env: map[string]string{
+		"FAKE_CALLS": os.Getenv("FAKE_CALLS"), "FAKE_PROMPT": os.Getenv("FAKE_PROMPT"),
+	}, Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := backend.Execute(t.Context(), "prompt", ExecOptions{Model: "openai/gpt-5.6", Sessions: &SessionsExecOptions{
+		Repository: "samsara-dev/example@main", Thread: "multica:model-verbatim",
+		MCPScopes: []string{"mcp:github"}, MaxSpendUSD: 1,
+		PersistSessionID: func(context.Context, string) error { return nil },
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range session.Messages {
+	}
+	<-session.Result
+	calls, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := strings.Split(strings.TrimSpace(string(calls)), "\n")[0]
+	if !strings.Contains(first, "--model openai/gpt-5.6") {
+		t.Fatalf("dispatch did not preserve model selector: %s", first)
 	}
 }
 
