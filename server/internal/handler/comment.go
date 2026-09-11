@@ -1464,6 +1464,7 @@ type CreateCommentRequest struct {
 	ParentID         *string  `json:"parent_id"`
 	AttachmentIDs    []string `json:"attachment_ids"`
 	SuppressAgentIDs []string `json:"suppress_agent_ids"`
+	Model            string   `json:"model,omitempty"`
 }
 
 type CommentTriggerPreviewRequest struct {
@@ -1728,8 +1729,24 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine author identity: agent (via X-Agent-ID header) or member.
+	// Determine author identity before validating a model target. The target's
+	// runtime provider is private capability information, so the validator must
+	// run the same invocation gate as ordinary mention resolution before it
+	// reads or reports anything about that runtime.
 	authorType, authorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
+	originatorUserID := h.invokeOriginatorFromRequest(r, authorType, authorID)
+	modelOverride, modelTargetID, ok := h.validateCommentModelOverride(w, r, issue, req.Content, req.Model, authorType, authorID, originatorUserID)
+	if !ok {
+		return
+	}
+	if modelTargetID.Valid {
+		for _, suppressedID := range suppressAgentIDs {
+			if suppressedID == modelTargetID {
+				writeError(w, http.StatusBadRequest, "model target cannot also be suppressed")
+				return
+			}
+		}
+	}
 
 	// sourceTaskID captures the agent's currently-executing task when it posts
 	// via the CLI (X-Task-ID header). Stamping it on the comment row keeps the
@@ -1875,13 +1892,63 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// must keep the resolved root in sync.
 	h.TaskService.AutoUnresolveThreadOnReply(r.Context(), rootComment, uuidToString(issue.WorkspaceID), authorType, authorID)
 
-	originatorUserID := h.invokeOriginatorFromRequest(r, authorType, authorID)
 	// The comment is already saved; a blocked mention must not fail the whole
 	// request. Surface the per-target outcomes so the client can show partial
 	// success instead of a silent no-op (MUL-4525 §2).
-	resp.TriggerOutcomes = h.triggerTasksForComment(r.Context(), issue, comment, parentComment, authorType, authorID, originatorUserID, suppressAgentIDs)
+	resp.TriggerOutcomes = h.triggerTasksForCommentWithModel(r.Context(), issue, comment, parentComment, authorType, authorID, originatorUserID, suppressAgentIDs, modelTargetID, modelOverride)
 
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+// validateCommentModelOverride keeps model choice a structured delegation
+// option rather than prompt parsing. A model can target exactly one explicitly
+// mentioned Sessions agent; the model selector itself remains opaque and is
+// passed to AgentGateway verbatim after trimming surrounding whitespace.
+func (h *Handler) validateCommentModelOverride(w http.ResponseWriter, r *http.Request, issue db.Issue, content, rawModel, actorType, actorID, originatorUserID string) (string, pgtype.UUID, bool) {
+	model := strings.TrimSpace(rawModel)
+	if model == "" {
+		return "", pgtype.UUID{}, true
+	}
+	if len(model) > 256 {
+		writeError(w, http.StatusBadRequest, "model must be at most 256 bytes")
+		return "", pgtype.UUID{}, false
+	}
+	var target *util.Mention
+	for _, mention := range util.ParseMentions(content) {
+		if mention.Type != "agent" && mention.Type != "squad" {
+			continue
+		}
+		if target != nil || mention.Type != "agent" {
+			writeError(w, http.StatusBadRequest, "model requires exactly one explicit agent mention and no squad mentions")
+			return "", pgtype.UUID{}, false
+		}
+		copy := mention
+		target = &copy
+	}
+	if target == nil {
+		writeError(w, http.StatusBadRequest, "model requires exactly one explicit agent mention")
+		return "", pgtype.UUID{}, false
+	}
+	targetID, err := util.ParseUUID(target.ID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid model target agent id")
+		return "", pgtype.UUID{}, false
+	}
+	targetAgent, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{ID: targetID, WorkspaceID: issue.WorkspaceID})
+	if err != nil || !h.canInvokeAgent(r.Context(), targetAgent, actorType, actorID, originatorUserID, uuidToString(issue.WorkspaceID)) {
+		writeError(w, http.StatusBadRequest, "model target cannot be invoked")
+		return "", pgtype.UUID{}, false
+	}
+	if targetAgent.ArchivedAt.Valid || !targetAgent.RuntimeID.Valid {
+		writeError(w, http.StatusBadRequest, "model target must be a runnable agent in this workspace")
+		return "", pgtype.UUID{}, false
+	}
+	runtime, err := h.Queries.GetAgentRuntimeForWorkspace(r.Context(), db.GetAgentRuntimeForWorkspaceParams{ID: targetAgent.RuntimeID, WorkspaceID: issue.WorkspaceID})
+	if err != nil || runtime.Provider != "sessions" {
+		writeError(w, http.StatusBadRequest, "per-task model selection is supported only for the Sessions runtime")
+		return "", pgtype.UUID{}, false
+	}
+	return model, targetID, true
 }
 
 // clientAuthorableCommentTypes is what POST /comments accepts. `status_change`
@@ -1921,6 +1988,10 @@ func isNoteComment(content string) bool {
 // deferred / blocked from enqueue. UI-suppressed triggers (the user unchecked
 // them) are removed before enqueue and produce no outcome.
 func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, comment db.Comment, parentComment *db.Comment, actorType, actorID, originatorUserID string, suppressAgentIDs []pgtype.UUID) []CommentTriggerOutcome {
+	return h.triggerTasksForCommentWithModel(ctx, issue, comment, parentComment, actorType, actorID, originatorUserID, suppressAgentIDs, pgtype.UUID{}, "")
+}
+
+func (h *Handler) triggerTasksForCommentWithModel(ctx context.Context, issue db.Issue, comment db.Comment, parentComment *db.Comment, actorType, actorID, originatorUserID string, suppressAgentIDs []pgtype.UUID, modelTargetID pgtype.UUID, modelOverride string) []CommentTriggerOutcome {
 	if isNoteComment(comment.Content) {
 		return nil
 	}
@@ -1930,7 +2001,7 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 	})
 	triggers = filterSuppressedCommentAgentTriggers(triggers, suppressAgentIDs)
 	h.noteBlockedRuntimeTargets(ctx, issue, targets)
-	enqueued := h.enqueueCommentAgentTriggers(ctx, issue, comment.ID, triggers)
+	enqueued := h.enqueueCommentAgentTriggersWithModel(ctx, issue, comment.ID, triggers, modelTargetID, modelOverride)
 	return commentTriggerOutcomes(targets, enqueued)
 }
 
@@ -2001,6 +2072,10 @@ type commentEnqueueResult struct {
 // target's outcome. queued / coalesced / deferred are success-shaped (the run
 // was handled, no duplicate task); only a real enqueue failure is blocked.
 func (h *Handler) enqueueCommentAgentTriggers(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, triggers []commentAgentTrigger) map[string]commentEnqueueResult {
+	return h.enqueueCommentAgentTriggersWithModel(ctx, issue, triggerCommentID, triggers, pgtype.UUID{}, "")
+}
+
+func (h *Handler) enqueueCommentAgentTriggersWithModel(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, triggers []commentAgentTrigger, modelTargetID pgtype.UUID, modelOverride string) map[string]commentEnqueueResult {
 	results := make(map[string]commentEnqueueResult, len(triggers))
 	record := func(trigger commentAgentTrigger, status DispatchStatus, reason DispatchReasonCode) {
 		execSquadID := ""
@@ -2010,7 +2085,11 @@ func (h *Handler) enqueueCommentAgentTriggers(ctx context.Context, issue db.Issu
 		results[uuidToString(trigger.Agent.ID)] = commentEnqueueResult{status: status, reason: reason, execSquadID: execSquadID}
 	}
 	for _, trigger := range triggers {
-		status, reason := h.resolveCommentTriggerEnqueue(ctx, issue, trigger, triggerCommentID)
+		triggerModel := ""
+		if modelTargetID.Valid && trigger.Agent.ID == modelTargetID {
+			triggerModel = modelOverride
+		}
+		status, reason := h.resolveCommentTriggerEnqueue(ctx, issue, trigger, triggerCommentID, triggerModel)
 		record(trigger, status, reason)
 	}
 	return results
@@ -2052,8 +2131,11 @@ func (h *Handler) enqueueCommentAgentTriggers(ctx context.Context, issue db.Issu
 // A duplicate that cannot yet be resolved re-loops (bounded by maxAttempts); on
 // genuine non-convergence it returns a truthful internal_error, never a fabricated
 // deferred that would silently drop the comment.
-func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Issue, trigger commentAgentTrigger, triggerCommentID pgtype.UUID) (DispatchStatus, DispatchReasonCode) {
+func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Issue, trigger commentAgentTrigger, triggerCommentID pgtype.UUID, modelOverride string) (DispatchStatus, DispatchReasonCode) {
 	pending := trigger.AlreadyPending
+	if modelOverride != "" && pending {
+		return DispatchBlocked, ReasonAlreadyActive
+	}
 	lostRace := false
 	// Resolve the reviewed HEAD lazily and at most once — the common
 	// non-pending path enqueues without ever needing it, so it stays off the
@@ -2138,12 +2220,15 @@ func (h *Handler) resolveCommentTriggerEnqueue(ctx context.Context, issue db.Iss
 				// no-blocker case; we simply never PROMISE it.)
 			}
 		}
-		if err := h.enqueueSingleCommentTrigger(ctx, issue, triggerCommentID, trigger); err != nil {
+		if err := h.enqueueSingleCommentTrigger(ctx, issue, triggerCommentID, trigger, modelOverride); err != nil {
 			// Lost the enqueue race: a sibling task for this (issue, agent) now
 			// exists. Re-resolve as pending so the next attempt folds this
 			// comment into that sibling (queued) or durably registers it
 			// (dispatched) instead of dropping it (#5914).
 			if errors.Is(err, service.ErrDuplicatePendingTask) {
+				if modelOverride != "" {
+					return DispatchBlocked, ReasonAlreadyActive
+				}
 				pending = true
 				lostRace = true
 				continue
@@ -2477,7 +2562,7 @@ func (h *Handler) propagateUncoveredCommentObligation(ctx context.Context, issue
 		if h.mergeCommentIntoPendingTask(ctx, issue, trigger, commentID, headSha) == commentMergeSucceeded {
 			return true
 		}
-		err = h.enqueueSingleCommentTrigger(ctx, issue, commentID, trigger)
+		err = h.enqueueSingleCommentTrigger(ctx, issue, commentID, trigger, "")
 		if err == nil {
 			return true
 		}
@@ -2510,7 +2595,7 @@ func logCommentEnqueueFailure(msg string, err error, attrs ...any) {
 // enqueueSingleCommentTrigger enqueues one resolved trigger and returns the
 // enqueue error (nil on success) so the caller can surface a
 // trigger_outcome (MUL-4525 §2).
-func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, trigger commentAgentTrigger) error {
+func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, trigger commentAgentTrigger, modelOverride string) error {
 	switch trigger.Source {
 	case commentTriggerSourceIssueAssignee:
 		if trigger.Squad != nil {
@@ -2535,7 +2620,13 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 			return err
 		}
 	case commentTriggerSourceMentionAgent:
-		if _, err := h.TaskService.EnqueueTaskForMention(ctx, issue, trigger.Agent.ID, triggerCommentID); err != nil {
+		var err error
+		if modelOverride != "" {
+			_, err = h.TaskService.EnqueueTaskForMentionWithModel(ctx, issue, trigger.Agent.ID, triggerCommentID, modelOverride)
+		} else {
+			_, err = h.TaskService.EnqueueTaskForMention(ctx, issue, trigger.Agent.ID, triggerCommentID)
+		}
+		if err != nil {
 			logCommentEnqueueFailure("enqueue mention agent task failed", err,
 				"issue_id", uuidToString(issue.ID),
 				"agent_id", uuidToString(trigger.Agent.ID))

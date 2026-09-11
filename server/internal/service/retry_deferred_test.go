@@ -33,8 +33,8 @@ func TestCreateRetryTaskFireAtControlsDeferral(t *testing.T) {
 	// which the schedule wants the next (final) retry deferred.
 	var parentID pgtype.UUID
 	if err := pool.QueryRow(ctx, `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, attempt, max_attempts, failure_reason, session_id, work_dir, channel_context_revision)
-		VALUES ($1, $2, $3, 'failed', 0, 2, 2, 'agent_error.provider_network', 'src-session', '/tmp/src-workdir', 7)
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, attempt, max_attempts, failure_reason, session_id, work_dir, channel_context_revision, model_override)
+		VALUES ($1, $2, $3, 'failed', 0, 2, 2, 'agent_error.provider_network', 'src-session', '/tmp/src-workdir', 7, 'claude-fable-5-1')
 		RETURNING id
 	`, agentID, runtimeID, issueID).Scan(&parentID); err != nil {
 		t.Fatalf("insert parent task: %v", err)
@@ -83,6 +83,9 @@ func TestCreateRetryTaskFireAtControlsDeferral(t *testing.T) {
 			}
 			if !child.ChannelContextRevision.Valid || child.ChannelContextRevision.Int64 != 7 {
 				t.Errorf("channel_context_revision = %+v, want 7", child.ChannelContextRevision)
+			}
+			if !child.ModelOverride.Valid || child.ModelOverride.String != "claude-fable-5-1" {
+				t.Errorf("model_override = %+v, want inherited selector", child.ModelOverride)
 			}
 		})
 	}

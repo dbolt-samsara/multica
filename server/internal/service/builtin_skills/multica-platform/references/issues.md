@@ -7,6 +7,7 @@ Product contracts the runtime brief does not fully encode.
 - [Custom properties: typed workflow state](#custom-properties-typed-workflow-state)
 - [Status changes have server side effects](#status-changes-have-server-side-effects)
 - [Claim ownership without duplicating a run](#claim-ownership-without-duplicating-a-run)
+- [Choose a model for one Sessions delegation](#choose-a-model-for-one-sessions-delegation)
 - [Who else is running right now](#who-else-is-running-right-now)
 - [Sub-issues: todo starts work now, backlog parks it](#sub-issues-todo-starts-work-now-backlog-parks-it)
 - [Incorrect to correct](#incorrect-to-correct)
@@ -269,6 +270,29 @@ claim. The server also suppresses a trusted self-assignment when the exact
 target `(issue, agent)` pair already has a non-terminal task, but it
 deliberately keeps same-agent handoffs to a fresh issue starting runs:
 cross-issue serial chains and triage batches rely on that.
+
+## Choose a model for one Sessions delegation
+
+When delegating to exactly one agent whose runtime is DevTools Sessions, the
+comment can select the model for that run without changing the agent's shared
+default:
+
+```bash
+multica issue comment add <issue-id> \
+  --content '[@Cloud Worker](mention://agent/<agent-uuid>) research this' \
+  --model claude-fable-5-1
+```
+
+The selector is passed to AgentGateway verbatim. Use an exact value from the
+Sessions runtime's model catalog; do not infer or rewrite provider prefixes.
+The option requires one explicit agent mention and rejects squad mentions or
+non-Sessions agents. It also refuses to coalesce into an existing run: wait for
+that run to finish and delegate again, so the requested model can never be
+silently replaced by the model of work already in flight.
+
+Omit `--model` to use the target agent's configured model, which falls back to
+`devtools/standard` when unset. Never update the shared agent merely to select
+a model for one delegation.
 
 ## Who else is running right now
 

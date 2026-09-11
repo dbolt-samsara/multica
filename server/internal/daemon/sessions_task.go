@@ -43,7 +43,10 @@ func buildSessionsIntent(task Task) (sessionsIntent, error) {
 	if task.Agent == nil {
 		return sessionsIntent{}, fmt.Errorf("Sessions runtime requires claimed agent instructions")
 	}
-	model := strings.TrimSpace(task.Agent.Model)
+	model := strings.TrimSpace(task.ModelOverride)
+	if model == "" {
+		model = strings.TrimSpace(task.Agent.Model)
+	}
 	if model == "" {
 		model = "devtools/standard"
 	}

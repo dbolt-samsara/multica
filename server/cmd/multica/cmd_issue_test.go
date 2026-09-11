@@ -361,6 +361,7 @@ func newIssueCommentAddTestCmd() *cobra.Command {
 	cmd.Flags().Bool("allow-external-file", false, "")
 	cmd.Flags().StringSlice("attachment", nil, "")
 	cmd.Flags().String("parent", "", "")
+	cmd.Flags().String("model", "", "")
 	cmd.Flags().String("output", "json", "")
 	return cmd
 }
@@ -421,6 +422,37 @@ func TestRunIssueCommentAddRejectsExternalAttachmentWithZeroUploads(t *testing.T
 	}
 	if comments != 0 {
 		t.Errorf("expected no comment to be posted, got %d", comments)
+	}
+}
+
+func TestRunIssueCommentAddSendsSessionsModelOverride(t *testing.T) {
+	const issueID = "11111111-1111-4111-8111-111111111111"
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID:
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/comments":
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode comment body: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "comment-1"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
+
+	cmd := newIssueCommentAddTestCmd()
+	_ = cmd.Flags().Set("content", "delegate")
+	_ = cmd.Flags().Set("model", "claude-fable-5-1")
+	if err := runIssueCommentAdd(cmd, []string{issueID}); err != nil {
+		t.Fatalf("runIssueCommentAdd: %v", err)
+	}
+	if body["model"] != "claude-fable-5-1" {
+		t.Fatalf("model = %#v, want claude-fable-5-1", body["model"])
 	}
 }
 
