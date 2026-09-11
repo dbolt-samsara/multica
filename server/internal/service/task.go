@@ -132,7 +132,7 @@ func (s *TaskService) validateSessionsIssueInvocation(ctx context.Context, agent
 		return ErrSessionsInvocationNotAllowed
 	}
 	parent, err := s.Queries.GetAgentTask(ctx, attr.DelegatedFromTaskID)
-	if err != nil || parent.AgentID == agent.ID || terminalTaskStatus(parent.Status) {
+	if err != nil || parent.AgentID == agent.ID || parent.Status != "running" {
 		return ErrSessionsInvocationNotAllowed
 	}
 	delegator, err := s.Queries.GetAgent(ctx, parent.AgentID)
@@ -140,15 +140,6 @@ func (s *TaskService) validateSessionsIssueInvocation(ctx context.Context, agent
 		return ErrSessionsInvocationNotAllowed
 	}
 	return nil
-}
-
-func terminalTaskStatus(status string) bool {
-	switch status {
-	case "completed", "failed", "cancelled":
-		return true
-	default:
-		return false
-	}
 }
 
 type SourceContextObjectStore interface {

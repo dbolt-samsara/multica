@@ -92,6 +92,11 @@ func TestSessionsEligibilityGates(t *testing.T) {
 	if status, message := testHandler.validateAssigneePair(ctx, delegatedReq, testWorkspaceID, pgtype.Text{String: "agent", Valid: true}, parseUUID(delegatedWorkerID)); status != 0 {
 		t.Fatalf("same-owner controller issue admission = (%d, %q), want success", status, message)
 	}
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'queued' WHERE id = $1`, controllerTaskID)
+	if status, _ := testHandler.validateAssigneePair(ctx, delegatedReq, testWorkspaceID, pgtype.Text{String: "agent", Valid: true}, parseUUID(delegatedWorkerID)); status != http.StatusForbidden {
+		t.Fatalf("non-running controller issue admission = %d, want %d", status, http.StatusForbidden)
+	}
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'running' WHERE id = $1`, controllerTaskID)
 	delegatedIssueID := dbfx.Issue(t, "Sessions delegated issue", testutil.Cols{
 		"assignee_type": "agent", "assignee_id": delegatedWorkerID,
 		"creator_type": "member", "creator_id": testUserID,

@@ -3857,7 +3857,14 @@ func (h *Handler) canAssignSessionsIssueWork(ctx context.Context, r *http.Reques
 		ID:          delegatorID,
 		WorkspaceID: wsID,
 	})
-	return err == nil && !delegator.ArchivedAt.Valid && delegator.OwnerID == agent.OwnerID
+	if err != nil || delegator.ArchivedAt.Valid || delegator.OwnerID != agent.OwnerID {
+		return false
+	}
+	// The bearer agent may act only through its own currently-running task.
+	// Do not let a same-owner agent borrow a different agent's task id merely
+	// because it knows the id from workspace activity.
+	sourceTask, ok := h.taskFromRequestHeader(r)
+	return ok && sourceTask.AgentID == delegator.ID && sourceTask.Status == "running"
 }
 
 // shouldEnqueueAgentTask returns true when an issue creation or assignment
