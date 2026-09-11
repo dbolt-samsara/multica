@@ -302,6 +302,7 @@ INSERT INTO agent_task_queue (
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
     squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id, trigger_evidence_kind, trigger_evidence_ref_id,
+    model_override,
     id
 )
 SELECT
@@ -327,6 +328,7 @@ SELECT
     sqlc.narg(rerun_of_task_id),
     sqlc.narg(trigger_evidence_kind),
     sqlc.narg(trigger_evidence_ref_id),
+    sqlc.narg(model_override),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, $3, $2)
 RETURNING *;
@@ -470,7 +472,9 @@ WHERE id = $1 AND issue_id IS NULL
 -- incremented; max_attempts, trigger_comment_id, coalesced_comment_ids,
 -- is_leader_task, and squad_id are inherited so the retried task receives the
 -- parent's complete planned comment batch and keeps the same squad-role
--- provenance. delivered_comment_ids intentionally stays at its '{}' default:
+-- provenance. model_override is also inherited so a transient retry cannot
+-- silently switch away from the Sessions model selected for the original run.
+-- delivered_comment_ids intentionally stays at its '{}' default:
 -- the child must earn its own delivery receipt at claim time.
 --
 -- originator_user_id is inherited so the Composio overlay decision sees the
@@ -523,7 +527,7 @@ INSERT INTO agent_task_queue (
     originator_source, delegated_from_task_id, rule_version_id,
     trigger_evidence_kind, trigger_evidence_ref_id, retry_of_task_id,
     chat_input_task_id, fire_at,
-    channel_context_revision, id
+    channel_context_revision, model_override, id
 )
 SELECT
     p.agent_id, p.runtime_id, p.issue_id, p.chat_session_id, p.autopilot_run_id,
@@ -543,7 +547,7 @@ SELECT
     p.originator_source, p.delegated_from_task_id, p.rule_version_id,
     p.trigger_evidence_kind, p.trigger_evidence_ref_id, p.id,
     p.chat_input_task_id, sqlc.narg(fire_at),
-    p.channel_context_revision,
+    p.channel_context_revision, p.model_override,
     -- Named new_task_id, not id: $1 above is the PARENT task's id.
     COALESCE(sqlc.narg('new_task_id')::uuid, gen_random_uuid())
 FROM agent_task_queue p

@@ -3,13 +3,119 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
+
+func TestSessionsCommentDelegationStoresPerTaskModelOverride(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	runtimeID := createProviderRuntime(t, "sessions")
+	agentID := dbfx.Agent(t, "sessions model override", runtimeID, testutil.Cols{
+		"owner_id":        testUserID,
+		"permission_mode": "public_to",
+	})
+	issueID := dbfx.Issue(t, "Sessions per-task model", testutil.Cols{
+		"creator_type": "member", "creator_id": testUserID,
+	})
+	controllerRuntimeID := handlerTestRuntimeID(t)
+	controllerID := dbfx.Agent(t, "sessions model controller", controllerRuntimeID, testutil.Cols{
+		"owner_id":        testUserID,
+		"permission_mode": "private",
+	})
+	controllerTaskID := dbfx.Task(t, controllerID, testutil.Cols{
+		"runtime_id":          controllerRuntimeID,
+		"issue_id":            issueID,
+		"status":              "running",
+		"started_at":          testutil.Raw("now()"),
+		"originator_user_id":  testUserID,
+		"accountable_user_id": testUserID,
+	})
+	content := fmt.Sprintf("[@Sessions Worker](mention://agent/%s) research this", agentID)
+	resp := testutil.Call(t, testHandler.CreateComment, testutil.WithURLParams(
+		asRun(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{
+			"content": content,
+			"model":   "  claude-fable-5-1  ",
+		}), controllerID, controllerTaskID), "id", issueID,
+	)).Want(http.StatusCreated)
+	var comment CommentResponse
+	resp.JSON(&comment)
+	if len(comment.TriggerOutcomes) != 1 || comment.TriggerOutcomes[0].Status != DispatchQueued {
+		t.Fatalf("trigger outcomes = %+v, want one queued run", comment.TriggerOutcomes)
+	}
+	tasks, err := testHandler.Queries.ListTasksByIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatalf("list issue tasks: %v", err)
+	}
+	var delegatedTask *db.AgentTaskQueue
+	for i := range tasks {
+		if tasks[i].AgentID == parseUUID(agentID) {
+			delegatedTask = &tasks[i]
+			break
+		}
+	}
+	if delegatedTask == nil || !delegatedTask.ModelOverride.Valid || delegatedTask.ModelOverride.String != "claude-fable-5-1" {
+		t.Fatalf("tasks = %+v, want delegated task with trimmed model override", tasks)
+	}
+	wire := taskToResponse(*delegatedTask, testWorkspaceID)
+	if wire.ModelOverride != "claude-fable-5-1" {
+		t.Fatalf("claim model_override = %q", wire.ModelOverride)
+	}
+
+	second := testutil.Call(t, testHandler.CreateComment, testutil.WithURLParams(
+		asRun(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{
+			"content":   content,
+			"parent_id": comment.ID,
+			"model":     "devtools/standard",
+		}), controllerID, controllerTaskID), "id", issueID,
+	)).Want(http.StatusCreated)
+	var secondComment CommentResponse
+	second.JSON(&secondComment)
+	if len(secondComment.TriggerOutcomes) != 1 || secondComment.TriggerOutcomes[0].Status != DispatchBlocked || secondComment.TriggerOutcomes[0].ReasonCode != ReasonAlreadyActive {
+		t.Fatalf("second trigger outcomes = %+v, want blocked/already_active", secondComment.TriggerOutcomes)
+	}
+	tasks, err = testHandler.Queries.ListTasksByIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatalf("list issue tasks after blocked override: %v", err)
+	}
+	delegatedCount := 0
+	for _, task := range tasks {
+		if task.AgentID == parseUUID(agentID) {
+			delegatedCount++
+			if task.ModelOverride.String != "claude-fable-5-1" {
+				t.Fatalf("blocked override changed delegated task: %+v", task)
+			}
+		}
+	}
+	if delegatedCount != 1 {
+		t.Fatalf("blocked override changed active task: %+v", tasks)
+	}
+}
+
+func TestCommentModelOverrideRejectsNonSessionsAgentBeforeSaving(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "non-sessions model target", nil)
+	issueID := dbfx.Issue(t, "Reject non-Sessions model", testutil.Cols{
+		"creator_type": "member", "creator_id": testUserID,
+	})
+	content := fmt.Sprintf("[@Local Worker](mention://agent/%s) research this", agentID)
+	testutil.Call(t, testHandler.CreateComment, testutil.WithURLParams(
+		newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{
+			"content": content,
+			"model":   "claude-fable-5-1",
+		}), "id", issueID,
+	)).Want(http.StatusBadRequest)
+}
 
 // TestSessionsEligibilityGates proves that a Sessions-bound agent cannot be
 // selected by Chat surfaces or by quick-create, and that the only HTTP issue
