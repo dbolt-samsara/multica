@@ -38,12 +38,18 @@ export function ModelDropdown({
   value,
   onChange,
   disabled,
+  label,
+  defaultLabel,
+  clearLabel,
 }: {
   runtimeId: string | null;
   runtimeOnline: boolean;
   value: string;
   onChange: (value: string) => void;
   disabled?: boolean;
+  label?: string;
+  defaultLabel?: string;
+  clearLabel?: string;
 }) {
   const { t } = useT("agents");
   const queryClient = useQueryClient();
@@ -124,14 +130,14 @@ export function ModelDropdown({
     (disabled
       ? t(($) => $.model_dropdown.select_runtime_first)
       : runtimeOnline
-        ? t(($) => $.model_dropdown.default_provider)
+        ? (defaultLabel ?? t(($) => $.model_dropdown.default_provider))
         : t(($) => $.model_dropdown.runtime_offline_manual));
 
   if (!supported && !modelsQuery.isLoading) {
     return (
       <div className="flex flex-col min-w-0">
         <div className="flex h-6 items-center">
-          <Label className="text-caption text-muted-foreground">{t(($) => $.model_dropdown.label)}</Label>
+          <Label className="text-caption text-muted-foreground">{label ?? t(($) => $.model_dropdown.label)}</Label>
         </div>
         <div className="mt-1.5 flex items-start gap-2 rounded-lg border border-dashed border-border bg-muted/30 px-3 py-2.5 text-body text-muted-foreground">
           <Info className="mt-0.5 h-4 w-4 shrink-0" />
@@ -149,7 +155,7 @@ export function ModelDropdown({
   return (
     <div className="flex flex-col min-w-0">
       <div className="flex h-6 items-center justify-between">
-        <Label className="text-caption text-muted-foreground">{t(($) => $.model_dropdown.label)}</Label>
+        <Label className="text-caption text-muted-foreground">{label ?? t(($) => $.model_dropdown.label)}</Label>
         {modelsQuery.isError && (
           <span
             className="text-caption text-muted-foreground"
@@ -298,7 +304,7 @@ export function ModelDropdown({
                 onClick={() => select("")}
                 className="mt-1 flex w-full items-center gap-2 border-t border-border px-3 py-2 text-left text-caption text-muted-foreground transition-colors hover:bg-accent/50"
               >
-                {t(($) => $.model_dropdown.clear_full)}
+                {clearLabel ?? t(($) => $.model_dropdown.clear_full)}
               </button>
             )}
           </div>

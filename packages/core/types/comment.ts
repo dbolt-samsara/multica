@@ -72,6 +72,12 @@ export interface CommentTriggerPreviewAgent {
   avatar_url?: string;
   source: CommentTriggerSource | string;
   reason: string;
+  /** Runtime metadata is additive and present when the server can resolve the
+   *  runnable target. The issue composer uses it to offer Sessions-only
+   *  per-run model selection without a second agent/runtime lookup. */
+  runtime_id?: string;
+  runtime_provider?: string;
+  runtime_online?: boolean;
 }
 
 export interface CommentTriggerPreview {

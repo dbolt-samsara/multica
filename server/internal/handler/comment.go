@@ -1483,11 +1483,14 @@ type CommentTriggerPreviewResponse struct {
 }
 
 type CommentTriggerAgentResponse struct {
-	ID        string  `json:"id"`
-	Name      string  `json:"name"`
-	AvatarURL *string `json:"avatar_url,omitempty"`
-	Source    string  `json:"source"`
-	Reason    string  `json:"reason"`
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	AvatarURL       *string `json:"avatar_url,omitempty"`
+	Source          string  `json:"source"`
+	Reason          string  `json:"reason"`
+	RuntimeID       string  `json:"runtime_id,omitempty"`
+	RuntimeProvider string  `json:"runtime_provider,omitempty"`
+	RuntimeOnline   *bool   `json:"runtime_online,omitempty"`
 }
 
 type commentAgentTriggerSource string
@@ -1534,14 +1537,21 @@ func commentAgentTriggerReason(trigger commentAgentTrigger) string {
 	}
 }
 
-func (h *Handler) commentAgentTriggerToResponse(trigger commentAgentTrigger) CommentTriggerAgentResponse {
-	return CommentTriggerAgentResponse{
+func (h *Handler) commentAgentTriggerToResponse(trigger commentAgentTrigger, runtimes map[string]db.AgentRuntime) CommentTriggerAgentResponse {
+	resp := CommentTriggerAgentResponse{
 		ID:        uuidToString(trigger.Agent.ID),
 		Name:      trigger.Agent.Name,
 		AvatarURL: h.resolveAvatarURLPtr(textToPtr(trigger.Agent.AvatarUrl)),
 		Source:    string(trigger.Source),
 		Reason:    commentAgentTriggerReason(trigger),
 	}
+	if runtime, ok := runtimes[uuidToString(trigger.Agent.RuntimeID)]; ok {
+		online := runtime.Status == "online"
+		resp.RuntimeID = uuidToString(runtime.ID)
+		resp.RuntimeProvider = runtime.Provider
+		resp.RuntimeOnline = &online
+	}
+	return resp
 }
 
 func (h *Handler) PreviewCommentTriggers(w http.ResponseWriter, r *http.Request) {
@@ -1625,8 +1635,22 @@ func (h *Handler) PreviewCommentTriggers(w http.ResponseWriter, r *http.Request)
 		Agents:  make([]CommentTriggerAgentResponse, 0, len(triggers)),
 		Blocked: commentBlockedTargetOutcomes(targets),
 	}
+	runtimeIDs := make([]pgtype.UUID, 0, len(triggers))
 	for _, trigger := range triggers {
-		resp.Agents = append(resp.Agents, h.commentAgentTriggerToResponse(trigger))
+		if trigger.Agent.RuntimeID.Valid {
+			runtimeIDs = append(runtimeIDs, trigger.Agent.RuntimeID)
+		}
+	}
+	runtimes := make(map[string]db.AgentRuntime, len(runtimeIDs))
+	if len(runtimeIDs) > 0 {
+		if rows, err := h.Queries.GetAgentRuntimes(r.Context(), runtimeIDs); err == nil {
+			for _, runtime := range rows {
+				runtimes[uuidToString(runtime.ID)] = runtime
+			}
+		}
+	}
+	for _, trigger := range triggers {
+		resp.Agents = append(resp.Agents, h.commentAgentTriggerToResponse(trigger, runtimes))
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

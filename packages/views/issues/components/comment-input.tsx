@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useCallback, useEffect } from "react";
+import { useRef, useState, useCallback, useEffect, useMemo } from "react";
 import { cn } from "@multica/ui/lib/utils";
 import { ContentEditor, type ContentEditorRef, useFileDropZone, FileDropOverlay, useLazyEditor, useUploadGate, useComposerSubmit } from "../../editor";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
@@ -8,19 +8,21 @@ import { SubmitButton } from "@multica/ui/components/common/submit-button";
 import { contentReferencesAttachment } from "@multica/core/types";
 import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
 import { useCommentDraftStore } from "@multica/core/issues/stores";
+import { parseMentions } from "@multica/core/issues/comment-trigger-outcomes";
 import { useT } from "../../i18n";
 import { CommentTriggerChips } from "./comment-trigger-chips";
 import { useCommentTriggerPreview } from "../hooks/use-comment-trigger-preview";
 import { useCommentUploads } from "./use-comment-uploads";
 import { useQuickActionMenu } from "../hooks/use-quick-action-menu";
 import { useStickyComposer } from "../hooks/use-sticky-composer";
+import { ModelDropdown } from "../../agents/components/model-dropdown";
 
 interface CommentInputProps {
   issueId: string;
   /** Resolves true on success, false on failure. The composer keeps the text
    *  (editor locked + button spinning) until this settles, then clears only on
    *  success — a failed send must not silently discard the user's draft. */
-  onSubmit: (content: string, attachmentIds?: string[], suppressAgentIds?: string[]) => Promise<string | boolean>;
+  onSubmit: (content: string, attachmentIds?: string[], suppressAgentIds?: string[], model?: string) => Promise<string | boolean>;
   /** Called after the server accepts the comment and the composer is cleared. */
   onAccepted?: (commentId: string) => void;
 }
@@ -47,7 +49,25 @@ function CommentInput({ issueId, onSubmit, onAccepted }: CommentInputProps) {
   const [content, setContent] = useState(initialDraft ?? "");
   const [isEmpty, setIsEmpty] = useState(() => !initialDraft?.trim());
   const [suppressedAgentIds, setSuppressedAgentIds] = useState<Set<string>>(() => new Set());
+  const [modelOverride, setModelOverride] = useState("");
   const triggerPreview = useCommentTriggerPreview({ issueId, content });
+  const sessionsModelTarget = useMemo(() => {
+    const dispatchMentions = parseMentions(content).filter(
+      (mention) => mention.type === "agent" || mention.type === "squad",
+    );
+    if (dispatchMentions.length !== 1 || dispatchMentions[0]?.type !== "agent") {
+      return null;
+    }
+    const target = triggerPreview.agents.find(
+      (agent) =>
+        agent.id === dispatchMentions[0]?.id &&
+        agent.source === "mention_agent" &&
+        agent.runtime_provider === "sessions" &&
+        !!agent.runtime_id,
+    );
+    if (!target || suppressedAgentIds.has(target.id)) return null;
+    return target;
+  }, [content, suppressedAgentIds, triggerPreview.agents]);
   // Uploads for this composer session (MUL-5181). Owned by the module-level
   // coordinator and persisted in the draft store, so closing/scrolling the
   // composer away no longer drops an in-flight upload — its result lands in the
@@ -98,7 +118,13 @@ function CommentInput({ issueId, onSubmit, onAccepted }: CommentInputProps) {
 
   useEffect(() => {
     setSuppressedAgentIds(new Set());
+    setModelOverride("");
   }, [issueId]);
+
+  const sessionsModelTargetID = sessionsModelTarget?.id ?? "";
+  useEffect(() => {
+    setModelOverride("");
+  }, [sessionsModelTargetID]);
 
   useEffect(() => {
     const visible = new Set(triggerPreview.agents.map((agent) => agent.id));
@@ -163,11 +189,12 @@ function CommentInput({ issueId, onSubmit, onAccepted }: CommentInputProps) {
       const suppressAgentIds = triggerPreview.agents
         .filter((agent) => suppressedAgentIds.has(agent.id))
         .map((agent) => agent.id);
-      return onSubmit(
-        content,
-        activeIds.length > 0 ? activeIds : undefined,
-        suppressAgentIds.length > 0 ? suppressAgentIds : undefined,
-      ).then((commentId) => {
+      const attachmentIds = activeIds.length > 0 ? activeIds : undefined;
+      const suppressedIds = suppressAgentIds.length > 0 ? suppressAgentIds : undefined;
+      const submission = modelOverride
+        ? onSubmit(content, attachmentIds, suppressedIds, modelOverride)
+        : onSubmit(content, attachmentIds, suppressedIds);
+      return submission.then((commentId) => {
         acceptedCommentIdRef.current = typeof commentId === "string" ? commentId : null;
         return !!commentId;
       });
@@ -189,6 +216,7 @@ function CommentInput({ issueId, onSubmit, onAccepted }: CommentInputProps) {
       setContent("");
       setIsEmpty(true);
       setSuppressedAgentIds(new Set());
+      setModelOverride("");
       editorScrubbedRef.current = true;
       if (acceptedCommentIdRef.current) onAccepted?.(acceptedCommentIdRef.current);
     },
@@ -266,6 +294,25 @@ function CommentInput({ issueId, onSubmit, onAccepted }: CommentInputProps) {
           <div className="rich-text-editor text-body">
             <p className="text-muted-foreground">{t(($) => $.comment.leave_comment_placeholder)}</p>
           </div>
+        </div>
+      )}
+      {lazy.ready && sessionsModelTarget && (
+        <div
+          className={cn(
+            "w-full max-w-sm px-3 pb-2",
+            submitting && "pointer-events-none opacity-60",
+          )}
+        >
+          <ModelDropdown
+            runtimeId={sessionsModelTarget.runtime_id ?? null}
+            runtimeOnline={sessionsModelTarget.runtime_online !== false}
+            value={modelOverride}
+            onChange={setModelOverride}
+            disabled={submitting}
+            label={t(($) => $.comment.run_model_label)}
+            defaultLabel={t(($) => $.comment.run_model_default)}
+            clearLabel={t(($) => $.comment.run_model_clear)}
+          />
         </div>
       )}
       <div className="absolute bottom-1 left-2 right-28 min-w-0">

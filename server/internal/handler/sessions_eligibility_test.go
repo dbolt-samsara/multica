@@ -40,6 +40,16 @@ func TestSessionsCommentDelegationStoresPerTaskModelOverride(t *testing.T) {
 		"accountable_user_id": testUserID,
 	})
 	content := fmt.Sprintf("[@Sessions Worker](mention://agent/%s) research this", agentID)
+	preview := testutil.Call(t, testHandler.PreviewCommentTriggers, testutil.WithURLParams(
+		asRun(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments/trigger-preview", map[string]any{
+			"content": content,
+		}), controllerID, controllerTaskID), "id", issueID,
+	)).Want(http.StatusOK)
+	var previewBody CommentTriggerPreviewResponse
+	preview.JSON(&previewBody)
+	if len(previewBody.Agents) != 1 || previewBody.Agents[0].RuntimeID != runtimeID || previewBody.Agents[0].RuntimeProvider != "sessions" || previewBody.Agents[0].RuntimeOnline == nil {
+		t.Fatalf("preview agents = %+v, want Sessions runtime metadata", previewBody.Agents)
+	}
 	resp := testutil.Call(t, testHandler.CreateComment, testutil.WithURLParams(
 		asRun(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{
 			"content": content,

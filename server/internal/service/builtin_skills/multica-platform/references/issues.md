@@ -277,6 +277,11 @@ When delegating to exactly one agent whose runtime is DevTools Sessions, the
 comment can select the model for that run without changing the agent's shared
 default:
 
+- In the issue UI, add exactly one explicit Sessions agent mention. The
+  **Run model** picker appears below the composer; choose the model before
+  sending.
+- From the CLI, pass the same selection with `--model`:
+
 ```bash
 multica issue comment add <issue-id> \
   --content '[@Cloud Worker](mention://agent/<agent-uuid>) research this' \
