@@ -51,7 +51,7 @@ function CommentInput({ issueId, onSubmit, onAccepted }: CommentInputProps) {
   const [suppressedAgentIds, setSuppressedAgentIds] = useState<Set<string>>(() => new Set());
   const [modelOverride, setModelOverride] = useState("");
   const triggerPreview = useCommentTriggerPreview({ issueId, content });
-  const sessionsModelTarget = useMemo(() => {
+  const runModelTarget = useMemo(() => {
     const dispatchMentions = parseMentions(content).filter(
       (mention) => mention.type === "agent" || mention.type === "squad",
     );
@@ -62,7 +62,6 @@ function CommentInput({ issueId, onSubmit, onAccepted }: CommentInputProps) {
       (agent) =>
         agent.id === dispatchMentions[0]?.id &&
         agent.source === "mention_agent" &&
-        agent.runtime_provider === "sessions" &&
         !!agent.runtime_id,
     );
     if (!target || suppressedAgentIds.has(target.id)) return null;
@@ -121,10 +120,10 @@ function CommentInput({ issueId, onSubmit, onAccepted }: CommentInputProps) {
     setModelOverride("");
   }, [issueId]);
 
-  const sessionsModelTargetID = sessionsModelTarget?.id ?? "";
+  const runModelTargetID = runModelTarget?.id ?? "";
   useEffect(() => {
     setModelOverride("");
-  }, [sessionsModelTargetID]);
+  }, [runModelTargetID]);
 
   useEffect(() => {
     const visible = new Set(triggerPreview.agents.map((agent) => agent.id));
@@ -296,7 +295,7 @@ function CommentInput({ issueId, onSubmit, onAccepted }: CommentInputProps) {
           </div>
         </div>
       )}
-      {lazy.ready && sessionsModelTarget && (
+      {lazy.ready && runModelTarget && (
         <div
           className={cn(
             "w-full max-w-sm px-3 pb-2",
@@ -304,8 +303,8 @@ function CommentInput({ issueId, onSubmit, onAccepted }: CommentInputProps) {
           )}
         >
           <ModelDropdown
-            runtimeId={sessionsModelTarget.runtime_id ?? null}
-            runtimeOnline={sessionsModelTarget.runtime_online !== false}
+            runtimeId={runModelTarget.runtime_id ?? null}
+            runtimeOnline={runModelTarget.runtime_online !== false}
             value={modelOverride}
             onChange={setModelOverride}
             disabled={submitting}

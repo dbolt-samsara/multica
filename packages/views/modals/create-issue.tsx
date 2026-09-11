@@ -344,7 +344,7 @@ export function ManualCreatePanel({
   );
   const canSelectRunModel =
     !anchorCommentId &&
-    selectedRuntime?.provider === "sessions" &&
+    selectedRuntime != null &&
     draftStatusCategory(status) !== "backlog";
   const modelTargetID = canSelectRunModel ? assigneeId ?? "" : "";
   useEffect(() => {
