@@ -127,6 +127,54 @@ func TestCommentModelOverrideRejectsNonSessionsAgentBeforeSaving(t *testing.T) {
 	)).Want(http.StatusBadRequest)
 }
 
+func TestCreateIssueStoresSessionsModelOverrideOnAutomaticTask(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	runtimeID := createProviderRuntime(t, "sessions")
+	agentID := dbfx.Agent(t, "sessions create model override", runtimeID, testutil.Cols{
+		"owner_id":        testUserID,
+		"permission_mode": "private",
+	})
+	resp := testutil.Call(t, testHandler.CreateIssue,
+		newRequest(http.MethodPost, "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+			"title":         "Sessions create model override",
+			"status":        "todo",
+			"assignee_type": "agent",
+			"assignee_id":   agentID,
+			"model":         "  claude-fable-5-1  ",
+		}),
+	).Want(http.StatusCreated)
+	var issue IssueResponse
+	resp.JSON(&issue)
+	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM issue WHERE id = $1`, issue.ID) })
+
+	tasks, err := testHandler.Queries.ListTasksByIssue(ctx, parseUUID(issue.ID))
+	if err != nil {
+		t.Fatalf("list created issue tasks: %v", err)
+	}
+	if len(tasks) != 1 || !tasks[0].ModelOverride.Valid || tasks[0].ModelOverride.String != "claude-fable-5-1" {
+		t.Fatalf("tasks = %+v, want one automatic task with model override", tasks)
+	}
+}
+
+func TestCreateIssueRejectsModelOverrideForNonSessionsAssignee(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "non-sessions create model target", nil)
+	testutil.Call(t, testHandler.CreateIssue,
+		newRequest(http.MethodPost, "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+			"title":         "Reject non-Sessions create model",
+			"status":        "todo",
+			"assignee_type": "agent",
+			"assignee_id":   agentID,
+			"model":         "claude-fable-5-1",
+		}),
+	).Want(http.StatusBadRequest)
+}
+
 // TestSessionsEligibilityGates proves that a Sessions-bound agent cannot be
 // selected by Chat surfaces or by quick-create, and that the only HTTP issue
 // admission is its private owner's direct assignment.

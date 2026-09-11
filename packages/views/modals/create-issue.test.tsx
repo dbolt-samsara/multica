@@ -51,6 +51,8 @@ const mockShowIssueLimitUpgradePrompt = vi.hoisted(() => vi.fn());
 // `api.uploadFile(file, ctx, signal)` (MUL-5181 L2). Tests drive uploads by
 // mocking that call; it resolves a plain server Attachment row.
 const mockApiUploadFile = vi.hoisted(() => vi.fn());
+const mockAgentList = vi.hoisted(() => ({ value: [] as Array<Record<string, unknown>> }));
+const mockRuntimeList = vi.hoisted(() => ({ value: [] as Array<Record<string, unknown>> }));
 
 const sourceContextPanelData = () => ({
   anchor_comment_id: "comment-source",
@@ -202,6 +204,30 @@ vi.mock("@multica/core/paths", () => ({
 
 vi.mock("@multica/core/hooks", () => ({
   useWorkspaceId: () => "ws-test",
+}));
+
+vi.mock("@multica/core/workspace/queries", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/workspace/queries")>()),
+  agentListOptions: () => ({
+    queryKey: ["agents", "test"],
+    queryFn: () => Promise.resolve(mockAgentList.value),
+  }),
+}));
+
+vi.mock("@multica/core/runtimes", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/runtimes")>()),
+  runtimeListOptions: () => ({
+    queryKey: ["runtimes", "test"],
+    queryFn: () => Promise.resolve(mockRuntimeList.value),
+  }),
+}));
+
+vi.mock("../agents/components/model-dropdown", () => ({
+  ModelDropdown: ({ value, onChange, label }: { value: string; onChange: (value: string) => void; label?: string }) => (
+    <button type="button" data-testid="create-run-model-picker" onClick={() => onChange("claude-fable-5-1")}>
+      {label}:{value || "default"}
+    </button>
+  ),
 }));
 
 vi.mock("./use-issue-limit-upgrade-prompt", () => ({
@@ -633,6 +659,8 @@ describe("CreateIssueModal", () => {
     // Reset the unified draft mock so per-test seeding (assignee, project, …)
     // doesn't leak into the next test in the suite.
     mockDraftStore.draft = emptyIssueDraft();
+    mockAgentList.value = [];
+    mockRuntimeList.value = [];
     mockSetShared.mockImplementation((patch: Partial<typeof mockDraftStore.draft.shared>) => {
       mockDraftStore.draft.shared = { ...mockDraftStore.draft.shared, ...patch };
     });
@@ -759,6 +787,44 @@ describe("CreateIssueModal", () => {
 
     expect(mockPush).toHaveBeenCalledWith("/ws-test/issues/issue-123");
     expect(mockToastDismiss).toHaveBeenCalledWith("toast-1");
+  });
+
+  it("offers a per-run model picker for a Sessions assignee and submits the selection", async () => {
+    const user = userEvent.setup();
+    const agentId = "8756121f-55cf-4ed6-ad69-a9b6d0435622";
+    mockDraftStore.draft.manual.assigneeType = "agent";
+    mockDraftStore.draft.manual.assigneeId = agentId;
+    mockAgentList.value = [{
+      id: agentId,
+      runtime_id: "runtime-sessions",
+      runtime_bound: true,
+      name: "DevAgents Cloud",
+    }];
+    mockRuntimeList.value = [{
+      id: "runtime-sessions",
+      provider: "sessions",
+      status: "online",
+    }];
+
+    renderModal(<CreateIssueModal onClose={vi.fn()} />);
+
+    const picker = await screen.findByTestId("create-run-model-picker");
+    expect(picker).toHaveTextContent("Run model:default");
+    await user.click(picker);
+    expect(picker).toHaveTextContent("claude-fable-5-1");
+    await user.type(screen.getByPlaceholderText("Issue title"), "Research with Fable");
+    await user.click(screen.getByRole("button", { name: "Create Issue" }));
+
+    await waitFor(() => {
+      expect(mockCreateIssue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: "Research with Fable",
+          assignee_type: "agent",
+          assignee_id: agentId,
+          model: "claude-fable-5-1",
+        }),
+      );
+    });
   });
 
   it("forwards selected labels in the create payload so they attach in the same transaction", async () => {

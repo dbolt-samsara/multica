@@ -2827,6 +2827,7 @@ type CreateIssueRequest struct {
 	StartDate     *string  `json:"start_date"`
 	DueDate       *string  `json:"due_date"`
 	AttachmentIDs []string `json:"attachment_ids,omitempty"`
+	Model         string   `json:"model,omitempty"`
 	// LabelIDs are issue-scoped labels to attach to the new issue in the same
 	// transaction as the create. Unknown or non-issue ids are rejected with
 	// 400 (service.ErrIssueLabelNotFound) rather than silently dropped.
@@ -2931,6 +2932,31 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, assigneeType, assigneeID); status != 0 {
 		writeError(w, status, msg)
 		return
+	}
+	modelOverride := strings.TrimSpace(req.Model)
+	if modelOverride != "" {
+		if len(modelOverride) > 256 {
+			writeError(w, http.StatusBadRequest, "model must be at most 256 bytes")
+			return
+		}
+		if !assigneeType.Valid || assigneeType.String != "agent" || !assigneeID.Valid {
+			writeError(w, http.StatusBadRequest, "model requires a Sessions agent assignee")
+			return
+		}
+		assignedAgent, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{ID: assigneeID, WorkspaceID: wsUUID})
+		if err != nil || !assignedAgent.RuntimeID.Valid {
+			writeError(w, http.StatusBadRequest, "model requires a runnable Sessions agent assignee")
+			return
+		}
+		runtime, err := h.Queries.GetAgentRuntimeForWorkspace(r.Context(), db.GetAgentRuntimeForWorkspaceParams{ID: assignedAgent.RuntimeID, WorkspaceID: wsUUID})
+		if err != nil || runtime.Provider != "sessions" {
+			writeError(w, http.StatusBadRequest, "per-task model selection is supported only for the Sessions runtime")
+			return
+		}
+		if issuestatus.Effective(r.Context(), h.Queries, wsUUID, status) == "backlog" {
+			writeError(w, http.StatusBadRequest, "model requires a status that starts the assigned agent")
+			return
+		}
 	}
 
 	if req.ProjectID != nil {
@@ -3085,6 +3111,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		ActorID:          actualCreatorID,
 		AnalyticsAgentID: analyticsAgentID,
 		Platform:         func() string { p, _, _ := middleware.ClientMetadataFromContext(r.Context()); return p }(),
+		ModelOverride:    modelOverride,
 		BroadcastPayload: func(issue db.Issue, atts []db.Attachment, labels []db.IssueLabel) map[string]any {
 			payload := issueToResponse(issue, prefix)
 			// The event other tabs receive must carry the category too — filling
