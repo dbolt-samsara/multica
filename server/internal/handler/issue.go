@@ -3717,7 +3717,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		},
 		h.issueTriggerWriteProbe(r, actorType, actorID, issue),
 	); ok && !req.SuppressRun {
-		h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.HandoffNote)
+		h.dispatchIssueRun(r.Context(), r, issue, trigger, actorType, actorID, req.HandoffNote)
 	}
 
 	// Platform-driven parent notification: when this issue transitions into
@@ -3783,8 +3783,8 @@ func (h *Handler) validateAssigneePair(ctx context.Context, r *http.Request, wor
 		actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
 		if sessions, err := h.isSessionsAgent(ctx, agent); err != nil {
 			return http.StatusInternalServerError, "failed to load agent runtime"
-		} else if sessions && (agent.PermissionMode != "private" || actorType != "member" || uuidToString(agent.OwnerID) != actorID) {
-			return http.StatusForbidden, "Sessions agents accept issue work only from their owner"
+		} else if sessions && !h.canAssignSessionsIssueWork(ctx, r, agent, actorType, actorID, workspaceID) {
+			return http.StatusForbidden, "Sessions agents accept owner claims or opted-in same-owner delegated issue work only"
 		}
 		effectiveInvoker := h.invokeOriginatorFromRequest(r, actorType, actorID)
 		if !h.canInvokeAgent(ctx, agent, actorType, actorID, effectiveInvoker, workspaceID) {
@@ -3830,6 +3830,34 @@ func (h *Handler) validateAssigneePair(ctx context.Context, r *http.Request, wor
 	default:
 		return http.StatusBadRequest, "assignee_type must be 'member', 'agent', or 'squad'"
 	}
+}
+
+// canAssignSessionsIssueWork is intentionally narrower than the generic
+// invocation policy. A Sessions agent's owner may assign it directly. To opt
+// in to controller delegation, its owner changes it to public_to; then only a
+// live same-owner agent task carrying that owner's originator may assign it.
+// This keeps autonomous, cross-owner, and terminal-task dispatches blocked.
+func (h *Handler) canAssignSessionsIssueWork(ctx context.Context, r *http.Request, agent db.Agent, actorType, actorID, workspaceID string) bool {
+	if actorType == "member" {
+		return uuidToString(agent.OwnerID) == actorID
+	}
+	if actorType != "agent" || agent.PermissionMode != "public_to" ||
+		h.invokeOriginatorFromRequest(r, actorType, actorID) != uuidToString(agent.OwnerID) {
+		return false
+	}
+	delegatorID, err := util.ParseUUID(actorID)
+	if err != nil {
+		return false
+	}
+	wsID, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return false
+	}
+	delegator, err := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{
+		ID:          delegatorID,
+		WorkspaceID: wsID,
+	})
+	return err == nil && !delegator.ArchivedAt.Valid && delegator.OwnerID == agent.OwnerID
 }
 
 // shouldEnqueueAgentTask returns true when an issue creation or assignment
@@ -4409,7 +4437,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			},
 			h.issueTriggerWriteProbe(r, actorType, actorID, issue),
 		); ok && !req.Updates.SuppressRun {
-			h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.Updates.HandoffNote)
+			h.dispatchIssueRun(r.Context(), r, issue, trigger, actorType, actorID, req.Updates.HandoffNote)
 		}
 
 		// No status change — not even → cancelled — cancels active tasks here,

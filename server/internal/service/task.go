@@ -92,9 +92,11 @@ type TaskService struct {
 
 // ErrSessionsInvocationNotAllowed rejects a queue entry before a hidden
 // Sessions backend could ever receive it. Sessions are deliberately narrower
-// than ordinary agent runtimes: their only supported input is a private
-// agent owner's direct claim of an existing issue.
-var ErrSessionsInvocationNotAllowed = errors.New("Sessions agents accept only directly claimed private owner issue work")
+// than ordinary agent runtimes: an owner may claim an issue directly, or may
+// explicitly opt in to a same-owner agent delegation by making the Sessions
+// agent public_to. The delegated run must retain a live source task and the
+// source agent must have the same owner.
+var ErrSessionsInvocationNotAllowed = errors.New("Sessions agents accept only owner claims or opted-in same-owner delegated issue work")
 
 func (s *TaskService) isSessionsAgent(ctx context.Context, agent db.Agent) (bool, error) {
 	if !agent.RuntimeID.Valid {
@@ -119,12 +121,34 @@ func (s *TaskService) validateSessionsIssueInvocation(ctx context.Context, agent
 	if !sessions {
 		return nil
 	}
-	if agent.PermissionMode != "private" || attr.Source != attribution.SourceDirectHuman ||
-		!attr.UserID.Valid || util.UUIDToString(attr.UserID) != util.UUIDToString(agent.OwnerID) ||
+	if !attr.UserID.Valid || util.UUIDToString(attr.UserID) != util.UUIDToString(agent.OwnerID) ||
 		isLeader || handoffNote != "" || issue.OriginType.Valid {
 		return ErrSessionsInvocationNotAllowed
 	}
+	if attr.Source == attribution.SourceDirectHuman {
+		return nil
+	}
+	if attr.Source != attribution.SourceDelegation || agent.PermissionMode != "public_to" || !attr.DelegatedFromTaskID.Valid {
+		return ErrSessionsInvocationNotAllowed
+	}
+	parent, err := s.Queries.GetAgentTask(ctx, attr.DelegatedFromTaskID)
+	if err != nil || parent.AgentID == agent.ID || terminalTaskStatus(parent.Status) {
+		return ErrSessionsInvocationNotAllowed
+	}
+	delegator, err := s.Queries.GetAgent(ctx, parent.AgentID)
+	if err != nil || delegator.WorkspaceID != agent.WorkspaceID || delegator.OwnerID != agent.OwnerID {
+		return ErrSessionsInvocationNotAllowed
+	}
 	return nil
+}
+
+func terminalTaskStatus(status string) bool {
+	switch status {
+	case "completed", "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
 }
 
 type SourceContextObjectStore interface {
@@ -1219,6 +1243,13 @@ func (s *TaskService) EnqueueTaskForIssueWithHandoff(ctx context.Context, issue 
 	return s.enqueueIssueTask(ctx, issue, pgtype.UUID{}, false, handoffNote, actorUserID, pgtype.UUID{}, pgtype.Timestamptz{})
 }
 
+// EnqueueTaskForIssueDelegated records an issue assignment made by a live
+// agent task. It preserves that task as the delegation provenance rather than
+// incorrectly labelling the owner as a direct human actor.
+func (s *TaskService) EnqueueTaskForIssueDelegated(ctx context.Context, issue db.Issue, sourceTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
+	return s.enqueueIssueTaskWithCommentPlan(ctx, issue, pgtype.UUID{}, nil, false, "", pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{}, sourceTaskID)
+}
+
 // enqueueIssueTask is the shared implementation behind EnqueueTaskForIssue
 // and the manual rerun path. forceFreshSession=true marks the task so the
 // daemon claim handler skips the (agent_id, issue_id) resume lookup — the
@@ -1265,10 +1296,10 @@ func (s *TaskService) ResolveIssueReviewSHAParam(ctx context.Context, issueID pg
 }
 
 func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz) (db.AgentTaskQueue, error) {
-	return s.enqueueIssueTaskWithCommentPlan(ctx, issue, triggerCommentID, nil, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt)
+	return s.enqueueIssueTaskWithCommentPlan(ctx, issue, triggerCommentID, nil, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, fireAt, pgtype.UUID{})
 }
 
-func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz) (db.AgentTaskQueue, error) {
+func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, delegatedFromTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
 	if !issue.AssigneeID.Valid {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
 		return db.AgentTaskQueue{}, fmt.Errorf("issue has no assignee")
@@ -1294,6 +1325,19 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 	// same value the pre-MUL-4302 resolver produced, so overlay/authorization
 	// are unchanged; the extra fields are audit provenance.
 	attr := s.attributionForIssueTask(ctx, issue, triggerCommentID, attribution.SourceCommentSource, actorUserID)
+	if delegatedFromTaskID.Valid {
+		parent, err := s.Queries.GetAgentTask(ctx, delegatedFromTaskID)
+		if err != nil {
+			return db.AgentTaskQueue{}, fmt.Errorf("load delegating task: %w", err)
+		}
+		attr = attribution.ClassifyDirect(attribution.DirectFacts{
+			IssueID:           issue.ID,
+			OriginType:        "agent_create",
+			OriginTaskID:      delegatedFromTaskID,
+			OriginOriginator:  parent.OriginatorUserID,
+			OriginAccountable: parent.AccountableUserID,
+		})
+	}
 	// No precise human resolved → owner_fallback (accountable = agent owner), or
 	// refuse the enqueue if the workspace is fail-closed (MUL-4302 §3.5).
 	attr, err = s.applyAttributionFallback(ctx, attr, agent)
@@ -5708,7 +5752,7 @@ func (s *TaskService) promoteNewestSurvivingComment(ctx context.Context, ids []p
 func (s *TaskService) enqueueRerunTask(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID) (db.AgentTaskQueue, error) {
 	if issue.AssigneeType.String == "agent" && issue.AssigneeID.Valid &&
 		util.UUIDToString(issue.AssigneeID) == util.UUIDToString(agentID) {
-		return s.enqueueIssueTaskWithCommentPlan(ctx, issue, triggerCommentID, coalescedCommentIDs, true, "", actorUserID, rerunOfTaskID, pgtype.Timestamptz{})
+		return s.enqueueIssueTaskWithCommentPlan(ctx, issue, triggerCommentID, coalescedCommentIDs, true, "", actorUserID, rerunOfTaskID, pgtype.Timestamptz{}, pgtype.UUID{})
 	}
 	return s.enqueueMentionTaskWithCommentPlan(ctx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, true, "", actorUserID, rerunOfTaskID)
 }
