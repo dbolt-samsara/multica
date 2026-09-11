@@ -67,9 +67,54 @@ func (b *sessionsBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	go func() {
 		defer close(messages)
 		defer close(result)
+		// `session watch` is a long-polling command. It may not produce stdout
+		// until the remote Session reaches a terminal state, so Output would hide
+		// all useful activity from the daemon's semantic-idle watchdog. Stream its
+		// lines as they arrive and emit a lightweight status heartbeat while the
+		// long poll is quiet; a healthy Cloud Session must not be cancelled merely
+		// because its watcher buffers output.
 		watch := b.cfg.commandAt(b.cfg.ExecutablePath).exec(ctx, "session", "watch", created.SessionID, "--json", "--since", "0")
 		watch.Env = cmd.Env
-		watched, watchErr := watch.Output()
+		watchOut, pipeErr := watch.StdoutPipe()
+		if pipeErr != nil {
+			result <- Result{Status: "failed", Error: fmt.Sprintf("Sessions watch setup failed: %v", pipeErr), SessionID: created.SessionID}
+			return
+		}
+		if err := watch.Start(); err != nil {
+			result <- Result{Status: "failed", Error: fmt.Sprintf("Sessions watch start failed: %v", err), SessionID: created.SessionID}
+			return
+		}
+		watchDone := make(chan error, 1)
+		go func() { watchDone <- watch.Wait() }()
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		var watched strings.Builder
+		readDone := make(chan struct{})
+		go func() {
+			defer close(readDone)
+			buf := make([]byte, 4096)
+			for {
+				n, err := watchOut.Read(buf)
+				if n > 0 {
+					watched.Write(buf[:n])
+				}
+				if err != nil {
+					return
+				}
+			}
+		}()
+		var watchErr error
+		for {
+			select {
+			case watchErr = <-watchDone:
+				<-readDone
+				goto watchedDone
+			case <-ticker.C:
+				messages <- Message{Type: MessageStatus, SessionID: created.SessionID}
+			}
+		}
+
+	watchedDone:
 		if ctx.Err() != nil {
 			cleanupSessionsProcess(b, cmd.Env, created.SessionID)
 		}
@@ -79,7 +124,7 @@ func (b *sessionsBackend) Execute(ctx context.Context, prompt string, opts ExecO
 			return
 		}
 		highestSeq := -1
-		for _, line := range strings.Split(strings.TrimSpace(string(watched)), "\n") {
+		for _, line := range strings.Split(strings.TrimSpace(watched.String()), "\n") {
 			var e struct {
 				Type, Text, Tool, InputSummary string
 				Seq                            int
