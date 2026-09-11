@@ -2531,6 +2531,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 		}
 		projectCtx.applyTo(&resp)
+		applyTaskRepositoryRefOverride(&resp, task.Context)
 
 		// Load every planned input as one chronological, de-duplicated set.
 		// The trigger is included here so the delivery receipt can only contain
@@ -3978,6 +3979,7 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	// by the existing per-(issue, agent) dedup, and terminating because the
 	// triggering comment always predates the follow-up run's started_at.
 	h.reconcileCommentsOnCompletion(r.Context(), task)
+	h.enqueueDelegatedWorkerResultContinuation(r.Context(), task)
 	// The terminal transaction and completion reconciliation are committed.
 	// Wake the owning runtime now so queued work that was blocked by this
 	// task's agent capacity or serialization key is re-claimed immediately.
@@ -3995,6 +3997,50 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("task completed", "task_id", taskID, "agent_id", uuidToString(task.AgentID))
 	writeJSON(w, http.StatusOK, taskToResponse(*task, workspaceID))
+}
+
+// enqueueDelegatedWorkerResultContinuation closes the leader→worker→leader
+// loop for terminal output synthesized by TaskService.CompleteTask. Synthesized
+// comments bypass Handler.CreateComment, so without this completion-side route
+// a successful or stopped remote worker result can sit in the delegation thread
+// until a human comments. Direct task provenance keeps the wake narrow: only a
+// non-leader task delegated by a leader task on this same issue may resume that
+// exact leader and squad. Normal thread/head dedup then makes callback replay
+// and a worker that already posted via the CLI converge on one coordinator run.
+func (h *Handler) enqueueDelegatedWorkerResultContinuation(ctx context.Context, task *db.AgentTaskQueue) {
+	if task == nil || task.IsLeaderTask || !task.IssueID.Valid || !task.AgentID.Valid || !task.DelegatedFromTaskID.Valid {
+		return
+	}
+	coordinator, err := h.Queries.GetAgentTask(ctx, task.DelegatedFromTaskID)
+	if err != nil || !coordinator.IsLeaderTask || !coordinator.SquadID.Valid || coordinator.IssueID != task.IssueID {
+		return
+	}
+	comment, err := h.Queries.GetLatestAgentCommentBySourceTask(ctx, task.ID)
+	if err != nil || comment.IssueID != task.IssueID || comment.AuthorID != task.AgentID {
+		return
+	}
+	issue, err := h.Queries.GetIssue(ctx, task.IssueID)
+	if err != nil {
+		return
+	}
+	trigger, ok := h.routeAssignedSquadLeaderFallback(ctx, issue, "agent", uuidToString(task.AgentID), commentTriggerComputeOptions{
+		ThreadCommentID:         comment.ID,
+		ExcludeTriggerCommentID: comment.ID,
+		OriginatorUserID:        uuidToString(task.OriginatorUserID),
+	})
+	if !ok || trigger.Squad == nil || trigger.Agent.ID != coordinator.AgentID || trigger.Squad.ID != coordinator.SquadID {
+		return
+	}
+	result := h.enqueueCommentAgentTriggers(ctx, issue, comment.ID, []commentAgentTrigger{trigger})[uuidToString(coordinator.AgentID)]
+	if result.status == DispatchBlocked {
+		slog.Warn("delegated worker result could not resume squad leader",
+			"issue_id", uuidToString(task.IssueID),
+			"worker_task_id", uuidToString(task.ID),
+			"coordinator_task_id", uuidToString(coordinator.ID),
+			"comment_id", uuidToString(comment.ID),
+			"reason", result.reason,
+		)
+	}
 }
 
 // emitIssueExecutedOnFirstCompletion atomically flips issue.first_executed_at

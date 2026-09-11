@@ -522,6 +522,46 @@ func (q *Queries) GetDelegatedFailureRecoveryExhaustionComment(ctx context.Conte
 	return i, err
 }
 
+const getLatestAgentCommentBySourceTask = `-- name: GetLatestAgentCommentBySourceTask :one
+SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at FROM comment
+WHERE source_task_id = $1
+  AND author_type = 'agent'
+  AND type = 'comment'
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+// Terminal issue-task output is synthesized as an agent comment with the task
+// id stamped as source_task_id. The completion handler uses this row to route a
+// delegated worker result back to its exact coordinator. A worker that already
+// posted through the CLI also carries the same stamp; selecting the latest row
+// makes the completion-side replay idempotent with that create-time route.
+func (q *Queries) GetLatestAgentCommentBySourceTask(ctx context.Context, sourceTaskID pgtype.UUID) (Comment, error) {
+	row := q.db.QueryRow(ctx, getLatestAgentCommentBySourceTask, sourceTaskID)
+	var i Comment
+	err := row.Scan(
+		&i.ID,
+		&i.IssueID,
+		&i.AuthorType,
+		&i.AuthorID,
+		&i.Content,
+		&i.Type,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ParentID,
+		&i.WorkspaceID,
+		&i.ResolvedAt,
+		&i.ResolvedByType,
+		&i.ResolvedByID,
+		&i.SourceTaskID,
+		&i.QuickActionID,
+		&i.ViaPluginID,
+		&i.Revision,
+		&i.RecoverySettledAt,
+	)
+	return i, err
+}
+
 const getLatestMemberCommentForIssueSince = `-- name: GetLatestMemberCommentForIssueSince :one
 SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at FROM comment
 WHERE issue_id = $1

@@ -405,6 +405,19 @@ WHERE id = $1;
 SELECT * FROM comment
 WHERE id = $1 AND workspace_id = $2;
 
+-- name: GetLatestAgentCommentBySourceTask :one
+-- Terminal issue-task output is synthesized as an agent comment with the task
+-- id stamped as source_task_id. The completion handler uses this row to route a
+-- delegated worker result back to its exact coordinator. A worker that already
+-- posted through the CLI also carries the same stamp; selecting the latest row
+-- makes the completion-side replay idempotent with that create-time route.
+SELECT * FROM comment
+WHERE source_task_id = @source_task_id
+  AND author_type = 'agent'
+  AND type = 'comment'
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
 -- name: GetThreadRoot :one
 -- Returns the thread-root comment for @comment_id by walking parent_id up to
 -- the row whose parent_id IS NULL. For a root comment it returns that comment
