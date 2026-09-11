@@ -47,6 +47,18 @@ const insertMarkdownBehavior = vi.hoisted(() => ({ succeed: true }));
 const editorUploadSignal = vi.hoisted(
   () => ({ notify: undefined as ((uploading: boolean) => void) | undefined }),
 );
+const commentPreviewState = vi.hoisted(() => ({
+  agents: [] as Array<{
+    id: string;
+    name: string;
+    source: string;
+    reason: string;
+    runtime_id?: string;
+    runtime_provider?: string;
+    runtime_online?: boolean;
+  }>,
+  blocked: [] as unknown[],
+}));
 
 // The real handle mints an id when it inserts the placeholder and hands it to
 // the uploader, which adopts it as the draft `clientUploadId`. Mocks must do
@@ -69,12 +81,25 @@ vi.mock("@multica/core/hooks/use-file-upload", async () => ({
   useFileUpload: () => ({ uploadWithToast }),
 }));
 
+vi.mock("../hooks/use-comment-trigger-preview", () => ({
+  useCommentTriggerPreview: () => commentPreviewState,
+}));
+
+vi.mock("../../agents/components/model-dropdown", () => ({
+  ModelDropdown: ({ value, onChange, label }: { value: string; onChange: (value: string) => void; label?: string }) => (
+    <button type="button" data-testid="run-model-picker" onClick={() => onChange("claude-fable-5-1")}>
+      {label}:{value || "default"}
+    </button>
+  ),
+}));
+
 vi.mock("../../common/actor-avatar", () => ({
   ActorAvatar: ({ actorType, actorId }: { actorType: string; actorId: string }) => (
     <span data-testid="actor-avatar">
       {actorType}:{actorId}
     </span>
   ),
+  AgentStatusDot: () => <span data-testid="agent-status-dot" />,
 }));
 
 vi.mock("../../editor", async () => ({
@@ -279,6 +304,8 @@ beforeEach(() => {
   editorQuickActionMenu.last = undefined;
   focusCalls.focused = 0;
   focusCalls.blurred = 0;
+  commentPreviewState.agents = [];
+  commentPreviewState.blocked = [];
 });
 
 // ---------------------------------------------------------------------------
@@ -400,6 +427,39 @@ describe("comment composers", () => {
 
     await waitFor(() => {
       expect(onSubmit).toHaveBeenCalledWith("hello from composer", undefined, undefined);
+    });
+  });
+
+  it("offers and submits a per-run model for one explicit Sessions agent mention", async () => {
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    commentPreviewState.agents = [{
+      id: agentId,
+      name: "DevAgents Cloud",
+      source: "mention_agent",
+      reason: "mentioned",
+      runtime_id: "runtime-sessions",
+      runtime_provider: "sessions",
+      runtime_online: true,
+    }];
+    const { container, onSubmit } = renderCommentInput(
+      vi.fn().mockResolvedValue("comment-model"),
+    );
+    const content = `[@DevAgents Cloud](mention://agent/${agentId}) research this`;
+
+    activateComposer("comment-composer-shell");
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: content } });
+    expect(screen.getByTestId("run-model-picker")).toHaveTextContent("Run model:default");
+    fireEvent.click(screen.getByTestId("run-model-picker"));
+    expect(screen.getByTestId("run-model-picker")).toHaveTextContent("claude-fable-5-1");
+    fireEvent.click(getSubmitButton(container));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith(
+        content,
+        undefined,
+        undefined,
+        "claude-fable-5-1",
+      );
     });
   });
 

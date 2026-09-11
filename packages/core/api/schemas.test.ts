@@ -1504,12 +1504,13 @@ describe("AutopilotQuotaUsageSchema", () => {
 describe("CommentTriggerPreviewSchema.blocked", () => {
   it("parses blocked mention outcomes alongside agents", () => {
     const parsed = CommentTriggerPreviewSchema.parse({
-      agents: [{ id: "a1", source: "mention_agent", reason: "" }],
+      agents: [{ id: "a1", source: "mention_agent", reason: "", runtime_id: "rt-1", runtime_provider: "sessions", runtime_online: true }],
       blocked: [
         { target_type: "squad", target_id: "s1", status: "blocked", reason_code: "invocation_not_allowed" },
       ],
     });
     expect(parsed.agents).toHaveLength(1);
+    expect(parsed.agents[0]).toMatchObject({ runtime_id: "rt-1", runtime_provider: "sessions", runtime_online: true });
     expect(parsed.blocked).toEqual([
       { target_type: "squad", target_id: "s1", status: "blocked", reason_code: "invocation_not_allowed" },
     ]);

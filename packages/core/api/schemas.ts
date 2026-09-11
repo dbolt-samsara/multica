@@ -1040,6 +1040,9 @@ const CommentTriggerPreviewAgentSchema = z.object({
   avatar_url: z.string().optional(),
   source: z.string().default(""),
   reason: z.string().default(""),
+  runtime_id: z.string().optional(),
+  runtime_provider: z.string().optional(),
+  runtime_online: z.boolean().optional(),
 }).loose();
 
 // Per-target outcome of an explicit @agent / @squad mention (MUL-4525 §2).

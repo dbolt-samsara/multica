@@ -1362,6 +1362,7 @@ describe("ApiClient", () => {
       "parent-1",
       ["attachment-1"],
       ["agent-1"],
+      "claude-fable-5-1",
     );
     await client.updateComment("comment-1", "updated", ["attachment-1"], ["agent-1"]);
 
@@ -1384,6 +1385,7 @@ describe("ApiClient", () => {
           parent_id: "parent-1",
           attachment_ids: ["attachment-1"],
           suppress_agent_ids: ["agent-1"],
+          model: "claude-fable-5-1",
         }),
       },
       {
